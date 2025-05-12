@@ -1,0 +1,405 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Numlog: numerical learning and reasoning using ILP %%%%%%%%%%%%%%%%%%%%%%%%
+%                                           Version: 2                                                  %
+%                                    Main Author: Daniel Cyrus                                          %
+%                            This version can learn from higher order relations                         % 
+%                                            The HMLR lab                                               %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+:- module(numlog, [learnFromFile/3]).
+
+:-use_foreign_library('libnumlog.so').
+
+:-op(500, xfy, user:(±)). 
+
+:-op(500, xfy, =>).
+:- dynamic user:modeh/2, user:modeb/2.
+:- dynamic user:pos/1.
+:- dynamic user:neg/1.
+%---------------------------------------------------------------
+
+user:checkInRange(X, Value ± Range):-
+    X =< Value + Range,
+    X >= Value - Range.
+
+user:inRange(X,Ranges):-
+    number(X),
+    include(checkInRange(X),Ranges,Filtered),
+    length(Filtered,L),
+    L > 0.
+
+user:leq(X,Value):-
+    number(X),
+    X =< Value.
+
+user:geq(X,Value):-
+    number(X),
+    X >= Value.
+
+combination([], []).
+combination([H|T], [H|Comb]) :-  
+    combination(T, Comb).
+combination([_|T], Comb) :-  
+    combination(T, Comb).
+
+
+member_in_list([], _, _) :- fail.
+member_in_list([H|_], List2,Parameters) :- nth0(Index, List2, H),nth0(Index, Parameters, in), !.
+%member(H, List2), !.
+member_in_list([_|T], List2,Parameters) :- member_in_list(T, List2,Parameters).
+
+getPredicate2(Ar,Bag):-
+    findall(G=>Args=>Par, (user:modeb(L/A,Par),length(Args,A),G =..[L|Args],call(G),member_in_list(Ar, Args,Par)), Bag).
+
+separate_pairs([], [], [],[]).
+separate_pairs([G=>B=>P | Pairs], [G | Gs], [B | Bs],[P|Ps]) :-
+    separate_pairs(Pairs, Gs, Bs,Ps).
+
+not_member(_, []).
+not_member(X, [H|T]) :- X \= H, not_member(X, T).
+
+filter_not_in_list(_, [], []).
+filter_not_in_list(List1, [H|T], [H|Result]) :-
+    not_member(H, List1),
+    filter_not_in_list(List1, T, Result).
+filter_not_in_list(List1, [_|T], Result) :-
+    filter_not_in_list(List1, T, Result).
+
+bottomClause([],Predicates,Arities,Predicates,Arities).
+bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
+    getPredicate2(Arity,G),
+    separate_pairs(G,Gs,Bs,Ps),
+    flatten(Bs, FlatList_Bs),
+    flatten(Ps, FlatList_Ps),
+    findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),nth1(N, FlatList_Ps, out),nth1(N,FlatList_Bs,NB)),FlatList),
+    append(Predicates,Gs,Per1),
+    append(Arity,Arities,Ar1),
+    sort(Ar1,Ar_1),
+    once(filter_not_in_list(Ar_1,FlatList,NewBs)),
+    bottomClause(NewBs,Per1,Ar_1,Predicates1,Arities1).
+
+
+getVarEq(List1,List2,Elem1,Elem2):-
+    nth0(Index, List1, Elem1),
+    (number(Elem1)-> Elem2=Elem1;
+    nth0(Index, List2, Elem2)).
+
+add_variable([],_,_,List,List).
+add_variable([H|T],List1,List2,List,NewList):-
+    H =.. [Cl|Args],
+    maplist(getVarEq(List1,List2),Args,Vars),
+    NewH =..[Cl|Vars],
+    append(List,[NewH],List3),
+    add_variable(T,List1,List2,List3,NewList).
+
+generateBottomClause([],L,L).
+generateBottomClause([A|T],L,L1):-
+    A =.. [_|Args],
+    once(bottomClause(Args,[],[],Literals,Arities)),
+    length(Arities,Len),
+    length(Arr,Len),
+    append([A],Literals,AP),
+    add_variable(AP,Arities,Arr,[],NewList),
+    append(L,[NewList],L2),
+    generateBottomClause(T,L2,L1).
+%--------------------Recursive Check----------------------------------------------
+ifRecursive(List,Pattern):-
+    find_repeating_pattern(List,Pattern),
+    length(List,L1),
+    length(Pattern,L2),
+    L1\=L2->true;fail.
+
+find_repeating_pattern(List, Pattern) :-
+        length(List, N),
+        between(1, N, L),  
+        0 is N mod L,      
+        length(Pattern, L),
+        append(Pattern, Rest, List),
+        repeated_pattern(Pattern, Rest), !. 
+
+repeated_pattern(_, []).
+repeated_pattern(Pattern, List) :-
+    append(Pattern, Rest, List),
+    repeated_pattern(Pattern, Rest).
+%------------------Generate hypothesis---------------------
+%%%%%%%%%%%%%%%%%%%Subsumption%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+combinations_conjunction(List,N, Subset) :-
+    combination(List, Subset),
+    length(Subset, N).      
+
+list_to_conj([], true).               % Empty list becomes true (identity for conjunction)
+list_to_conj([X], X).                 % Single element stays as is
+list_to_conj([H|T], (H,Rest)) :-      % Multiple elements become a conjunction
+    list_to_conj(T, Rest).
+
+member_addr(X, [Y|_]) :-
+    X == Y. 
+member_addr(X, [_|Ys]) :-
+    member_addr(X, Ys).
+
+ifAll([], _). 
+ifAll([X|Xs], B) :-
+    member_addr(X, B),  
+    ifAll(Xs, B). 
+
+getAllArgs([],A,B):-flatten(A,B).
+getAllArgs([H|T],Args,A):-
+    %writeln(H),
+    (H =.. [_|BArgs] ->
+    append(Args,[BArgs],A1);
+    A1=Args),
+    getAllArgs(T,A1,A).
+
+% flatten_conjunction((A,B), List) :-
+%     !,
+%     flatten_conjunction(A, ListA),
+%     flatten_conjunction(B, ListB),
+%     append(ListA, ListB, List).
+% flatten_conjunction(A, [A]).
+    
+
+head_connectedness(Args,Body):-
+    %flatten_conjunction(Body,Body1),
+    getAllArgs(Body,[],BArgs),
+    sort(BArgs, Sorted),
+    %length(Body,L),
+    % (L > 1 ->
+    %     length(BArgs,LBA),
+    %     sort(BArgs, Sorted),
+    %     length(Sorted,LS),
+    %     LS<LBA;true),
+    ifAll(Args,Sorted).
+
+%---------------------------------------------------------
+refinementBottomClauses([],_,NewBC,NewBC).
+refinementBottomClauses([H|T],Filtered,NewBC,Temp):-
+    (member(H, Filtered)->
+    (H =.. [Cl,Var|_],
+    H1 =..[Cl,Var],
+    append(NewBC,[H1],NewBC1));
+    append(NewBC, [H], NewBC1)),    
+    refinementBottomClauses(T,Filtered,NewBC1,Temp).
+
+groupRefinementBottomClauses([],_,NewBC,NewBC).
+groupRefinementBottomClauses([H|T],Filtered,NewBC,Temp):-
+    refinementBottomClauses(H,Filtered,[],NewBC1),
+    append(NewBC,[NewBC1],NewBC2),
+    groupRefinementBottomClauses(T,Filtered,NewBC2,Temp).
+
+% Main predicate
+cluster_vars_by_numbers(Terms, Grouped,Filtered) :-
+    include(only_numbers, Terms, Filtered),     % Keep only a(_, Number) where Number is numeric
+    collect_pairs(Filtered, Pairs),             % Convert to [Var-Value, ...]
+    sort(0, @=<, Pairs, Ps),
+    group_pairs_by_key(Ps, Grouped).
+
+% Keep only terms with numeric values
+only_numbers(T) :-
+    T =.. [_, _, Value],
+    number(Value).
+% Turn a(Var, Val) into Var-Val
+collect_pairs([], []).
+collect_pairs([H|T], [Term - Var - Val|Rest]) :-
+    H =.. [Term, Var, Val],  % Extract Var and Val
+    collect_pairs(T, Rest).
+
+bottomClausesPrint(Term,Copy) :-
+    copy_term(Term, Copy),
+    numbervars(Copy, 0, _, [singletons(true)]).
+
+
+analyseNumbers(Pos,Neg,F,NewBC):-
+        flatten(Pos,FlatPos),
+        flatten(Neg,FlatNeg),
+        cluster_vars_by_numbers(FlatPos,GroupedPos,Filtered),
+        cluster_vars_by_numbers(FlatNeg,GroupedNeg,_),
+        groupRefinementBottomClauses(Pos,Filtered,[],NewBC),
+        %write(Filtered),nl,
+        %write(GroupedPos),nl,
+        extractAndProcessGMM(GroupedPos,GroupedNeg,[],F).
+
+
+
+    inRangeStandardisation([],Ranges,Ranges).
+    inRangeStandardisation([H|T],Ranges,Temp):-
+            (H \= []->
+            (sum_list(H, Sum),
+            length(H, Len),
+            min_list(H, Min),
+            Mean is Sum / Len,
+            Range is Mean -  Min,
+            append(Ranges, [Mean ± Range], Ranges1));
+            Ranges1=Ranges),
+            inRangeStandardisation(T,Ranges1,Temp).
+        
+        
+    make_list(A, B, C, D) :-
+            include(nonvar, [A, B, C], D).   
+    
+list_to_disjunction([X], X) :- !.
+list_to_disjunction([H|T], (H ; Rest)) :-
+            list_to_disjunction(T, Rest).
+    
+extractAndProcessGMM([],_,FunctionsInvention,FunctionsInvention).    
+extractAndProcessGMM([Term-Var-ValuePos|RestPos],Neg,FunctionsInvention,Rest):-
+        ((nth0(Index, Neg, Term-VarNeg-_),Var==VarNeg)->
+        nth0(Index, Neg, _-_-N1),
+        ValueNeg=N1;
+        ValueNeg=[]),
+        findThresholds(ValuePos,ValueNeg,Leq,InRange,Geq),
+        TermHead =.. [Term,HeadVar,NewVar],
+        (Leq \= [] -> max_list(Leq, Max),ThrL = leq(NewVar,Max);ThrL=_),
+        (InRange \= [[]] -> inRangeStandardisation(InRange,[],Threshold),(Threshold\=[]->ThrI = inRange(NewVar,Threshold);ThrI=_) ;ThrI=_),
+        (Geq \= [] -> min_list(Geq, Min),ThrG = geq(NewVar,Min);ThrG=_),   
+        make_list(ThrL, ThrI, ThrG, Body),
+        (Body \= [] -> (Head =.. [Term,HeadVar],list_to_disjunction(Body,BD), FunctionsInvention1 = (Head :- TermHead,BD),copy_term(FunctionsInvention1,FunctionsInvention2),append(FunctionsInvention,[Var => FunctionsInvention2],Rest1));Rest1=FunctionsInvention),
+        extractAndProcessGMM(RestPos,Neg,Rest1,Rest).
+%--------------------------Hypothesis--------------------------------
+
+entailExamples([],List,List).
+entailExamples([F|NEx],Temp,List):-
+    %F =.. [Head|_],
+    %listing(user:Head/2),
+    (call(user:F) ->
+        %write('--->yes<---'),
+        append(Temp,[F],Temp1);
+        %write('no'),
+        Temp1=Temp),
+        entailExamples(NEx,Temp1,List).
+
+
+checkCoverage(NewClause,InvF,Pos,Neg,Rule):-
+    %copy_term(Clause, NewClause),
+    assertz(user:NewClause),
+
+    entailExamples(Pos,[],PosList),
+    entailExamples(Neg,[],NegList),
+    retract(user:NewClause),
+    Rule = rule(NewClause, PosList, NegList,InvF).
+
+findRelevantInventedFunctions([],_,[]).
+findRelevantInventedFunctions([H|T],InvF,[Bag|Rest]):-
+    H =.. [_|Args],
+    length(Args,Len),
+    (Len = 1 ->
+        nth0(0,Args,A1),
+        findall(C,(nth0(_,InvF,(A=>C)),A==A1),Bag);
+        Bag = []),
+        findRelevantInventedFunctions(T,InvF,Rest).
+
+generateRules(H,InvF,Exs,NExs,Rule):-
+    H = [Head|Body],
+    
+    between(1,3,N),  % add max clause here
+    combinations_conjunction(Body,N,B),
+    
+    length(B,Len),
+    Len>0,
+
+    list_to_conj(B, Conj),
+    Clause = (Head:-Conj),
+    Head =.. [_|HArgs],
+    
+    head_connectedness(HArgs,B),%head_connectedness
+
+    findRelevantInventedFunctions(B,InvF,FilteredInvF),
+    flatten(FilteredInvF,FlatFilteredInvF),
+   
+    assertAll(FlatFilteredInvF),
+    checkCoverage(Clause,FlatFilteredInvF,Exs,NExs,Rule),
+    retractAll(FlatFilteredInvF).
+
+
+
+hypothesisSpace(Exs,NExs,InvF,BCs,Rules):-
+    findall(R, generateRules(BCs,InvF,Exs,NExs,R), Rules).
+
+%------------------Best rule from hypothesis space----------------
+
+%====================================
+% select_best_rule(Rules, BestRule)
+% Selects the best rule from a list of rules based on:
+% 1. Highest positive coverage
+% 2. Lowest negative coverage
+% 3. Lowest complexity
+select_best_rule([Rule], Rule) :- !.
+select_best_rule([Rule|Rules], BestRule) :-
+    select_best_rule(Rules, BestOfRest),
+    compare_rules(Rule, BestOfRest, BestRule).
+
+% compare_rules(Rule1, Rule2, BestRule)
+% Compares two rules and selects the better one based on criteria
+compare_rules(Rule1, Rule2, Rule1) :-
+    rule_metrics(Rule1, Pos1, Neg1, Comp1),
+    rule_metrics(Rule2, Pos2, Neg2, Comp2),
+  
+    ( Pos1 > Pos2;
+      Pos1 = Pos2, Neg1 < Neg2;
+      Pos1 = Pos2, Neg1 = Neg2, Comp1 < Comp2 ), !.
+compare_rules(_, Rule2, Rule2).
+
+% rule_metrics(Rule, PosCount, NegCount, Complexity)
+% Computes metrics for a rule:
+% - PosCount: Number of positive examples
+% - NegCount: Number of negative examples
+% - Complexity: Number of literals in the body (excluding true)
+rule_metrics(rule((_:-Body), Pos, Neg,_), PosCount, NegCount, Complexity) :-
+    length(Pos, PosCount),
+    length(Neg, NegCount),
+    body_complexity(Body, Complexity).
+
+% body_complexity(Body, Complexity)
+% Counts the number of literals in the body, excluding 'true'
+body_complexity(true, 0) :- !.
+body_complexity((Literal,Rest), Complexity) :-
+    !, body_complexity(Rest, RestComplexity),
+    ( Literal = true -> Complexity = RestComplexity;
+      Complexity is RestComplexity + 1 ).
+body_complexity(Literal, 1) :-
+    Literal \= true.
+
+%----------------------------------------------------------
+assertAll([]).
+assertAll([H|T]):-
+    assertz(user:H),
+    assertAll(T).
+
+retractAll([]).
+retractAll([H|T]):-
+    retract(user:H),
+    retractAll(T).
+
+learnFromFile(BKFile,ExampleFile,BiasFile):-
+    
+    user:consult(BKFile),
+    user:consult(ExampleFile),
+    user:consult(BiasFile),
+    
+    writeln('Processing file and numerical values...'),
+    
+    user:modeh(Head/HA,_),
+
+    findall(F,(length(V,HA),F=..[Head|V],pos(F)),ArrPos),
+    findall(F,(length(V,HA),F=..[Head|V],neg(F)),ArrNeg),
+
+    generateBottomClause(ArrPos,[],PBC),
+    generateBottomClause(ArrNeg,[],NBC),
+    %maplist(bottomClausesPrint,BCs,PBC),
+    %maplist(bottomClausesPrint,BCs1,NBC),
+
+    analyseNumbers(PBC,NBC,InventedFunctions,NewBC),
+    
+    maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions),NewBC,Hypos),
+    
+   
+    flatten(Hypos,FlatHypos),
+    
+    select_best_rule(FlatHypos, H),
+    H = rule((FinalRule),_,_,InvF),
+    writeln('Final Rule:'),
+    write(FinalRule),nl,
+    maplist(writeln,InvF).
+    %maplist(bottomClausesPrint,FinalRule,FinalRule1),
+    %write(FinalRule1).  
+
+
