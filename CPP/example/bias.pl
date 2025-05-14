@@ -1,0 +1,33 @@
+%head predicate
+head_pred(diseas(id)).
+%body preicate
+body_pred(mean_radius(id,float)).
+body_pred(mean_texture(id,float)).
+body_pred(mean_perimeter(id,float)).
+body_pred(mean_area(id,float)).
+body_pred(mean_smoothness(id,float)).
+body_pred(mean_compactness(id,float)).
+body_pred(mean_concavity(id,float)).
+body_pred(mean_concave_points(id,float)).
+body_pred(mean_symmetry(id,float)).
+body_pred(mean_fractal_dimension(id,float)).
+body_pred(radius_error(id,float)).
+body_pred(texture_error(id,float)).
+body_pred(perimeter_error(id,float)).
+body_pred(area_error(id,float)).
+body_pred(smoothness_error(id,float)).
+body_pred(compactness_error(id,float)).
+body_pred(concavity_error(id,float)).
+body_pred(concave_points_error(id,float)).
+body_pred(symmetry_error(id,float)).
+body_pred(fractal_dimension_error(id,float)).
+body_pred(worst_radius(id,float)).
+body_pred(worst_texture(id,float)).
+body_pred(worst_perimeter(id,float)).
+body_pred(worst_area(id,float)).
+body_pred(worst_smoothness(id,float)).
+body_pred(worst_compactness(id,float)).
+body_pred(worst_concavity(id,float)).
+body_pred(worst_concave_points(id,float)).
+body_pred(worst_symmetry(id,float)).
+body_pred(worst_fractal_dimension(id,float)).
