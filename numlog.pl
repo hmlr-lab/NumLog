@@ -11,28 +11,34 @@
 :-op(500, xfy, user:(±)). 
 
 :-op(500, xfy, =>).
-:- dynamic user:modeh/2, user:modeb/2.
-:- dynamic user:pos/1.
-:- dynamic user:neg/1.
+:- dynamic modeh/2, modeb/2.
+:- dynamic pos/1.
+:- dynamic neg/1.
 %---------------------------------------------------------------
-
-user:checkInRange(X, Value ± Range):-
+%-------------------Operator---------------
+checkInRange(X, Value ± Range):-
     X =< Value + Range,
     X >= Value - Range.
 
-user:inRange(X,Ranges):-
+inRange(X,Ranges):-
     number(X),
     include(checkInRange(X),Ranges,Filtered),
     length(Filtered,L),
     L > 0.
 
-user:leq(X,Value):-
+leq(X,Value):-
     number(X),
     X =< Value.
 
-user:geq(X,Value):-
+geq(X,Value):-
     number(X),
     X >= Value.
+
+relations(A, B, Op) :-
+    number(A),
+    number(B),
+    A > B -> Op = '>'; Op = '<'.
+%-------------------------------------------
 
 combination([], []).
 combination([H|T], [H|Comb]) :-  
@@ -47,7 +53,7 @@ member_in_list([H|_], List2,Parameters) :- nth0(Index, List2, H),nth0(Index, Par
 member_in_list([_|T], List2,Parameters) :- member_in_list(T, List2,Parameters).
 
 getPredicate2(Ar,Bag):-
-    findall(G=>Args=>Par, (user:modeb(L/A,Par),length(Args,A),G =..[L|Args],call(G),member_in_list(Ar, Args,Par)), Bag).
+    findall(G=>Args=>Par, (modeb(L/A,Par),length(Args,A),G =..[L|Args],call(G),member_in_list(Ar, Args,Par)), Bag).
 
 separate_pairs([], [], [],[]).
 separate_pairs([G=>B=>P | Pairs], [G | Gs], [B | Bs],[P|Ps]) :-
@@ -127,8 +133,8 @@ combinations_conjunction(List,N, Subset) :-
     combination(List, Subset),
     length(Subset, N).      
 
-list_to_conj([], true).               % Empty list becomes true (identity for conjunction)
-list_to_conj([X], X).                 % Single element stays as is
+%list_to_conj([], none).               % Empty list becomes true (identity for conjunction)
+list_to_conj([X], X):-!.                 % Single element stays as is
 list_to_conj([H|T], (H,Rest)) :-      % Multiple elements become a conjunction
     list_to_conj(T, Rest).
 
@@ -203,10 +209,15 @@ collect_pairs([H|T], [Term - Var - Val|Rest]) :-
     H =.. [Term, Var, Val],  % Extract Var and Val
     collect_pairs(T, Rest).
 
-bottomClausesPrint(Term,Copy) :-
+bottomClausePrint1(Term,Copy) :-
     copy_term(Term, Copy),
     numbervars(Copy, 0, _, [singletons(true)]).
 
+bottomClausePrint(Term, Numbered) :-
+        copy_term(Term, Copy),
+        numbervars(Copy, 0, _),  % Number all variables in the copy
+        Numbered = Copy.                     % Return the numbered version
+    
 
 analyseNumbers(Pos,Neg,F,NewBC):-
         flatten(Pos,FlatPos),
@@ -214,8 +225,8 @@ analyseNumbers(Pos,Neg,F,NewBC):-
         cluster_vars_by_numbers(FlatPos,GroupedPos,Filtered),
         cluster_vars_by_numbers(FlatNeg,GroupedNeg,_),
         groupRefinementBottomClauses(Pos,Filtered,[],NewBC),
-        %write(Filtered),nl,
-        %write(GroupedPos),nl,
+        %write(NewBC),nl,
+        %write(FlatNeg),nl,
         extractAndProcessGMM(GroupedPos,GroupedNeg,[],F).
 
 
@@ -260,22 +271,55 @@ entailExamples([],List,List).
 entailExamples([F|NEx],Temp,List):-
     %F =.. [Head|_],
     %listing(user:Head/2),
-    (call(user:F) ->
+    (call(F) ->
         %write('--->yes<---'),
         append(Temp,[F],Temp1);
         %write('no'),
         Temp1=Temp),
         entailExamples(NEx,Temp1,List).
 
+%-------------------------------------------------      
+% Entry point
+restore_vars(Clause, Restored) :-
+    empty_assoc(VarMap),
+    restore_term(Clause, Restored, VarMap, _).
 
-checkCoverage(NewClause,InvF,Pos,Neg,Rule):-
-    %copy_term(Clause, NewClause),
-    assertz(user:NewClause),
+% Base case: constant or atom
+restore_term(Term, Term, Map, Map) :-
+    atomic(Term),
+    !.
 
+% Case: variable in form '$VAR'(N)
+restore_term('$VAR'(N), Var, MapIn, MapOut) :-
+    ( get_assoc(N, MapIn, Var) ->
+        MapOut = MapIn
+    ; put_assoc(N, MapIn, Var, MapOut)
+    ).
+
+% Case: compound term
+restore_term(Term, NewTerm, MapIn, MapOut) :-
+    compound(Term),
+    Term =.. [F | Args],
+    restore_args(Args, NewArgs, MapIn, MapOut),
+    NewTerm =.. [F | NewArgs].
+
+% Helper: restore list of arguments
+restore_args([], [], Map, Map).
+restore_args([H|T], [H2|T2], MapIn, MapOut) :-
+    restore_term(H, H2, MapIn, MapMid),
+    restore_args(T, T2, MapMid, MapOut).
+    
+%-------------------------------------------------
+
+checkCoverage(Clause,InvF,Pos,Neg,Rule):-
+    restore_vars(Clause, NewClause),
+    %copy_term(NewClause, NewClause1),
+    assertz(NewClause),
+   
     entailExamples(Pos,[],PosList),
     entailExamples(Neg,[],NegList),
-    retract(user:NewClause),
-    Rule = rule(NewClause, PosList, NegList,InvF).
+    retract(NewClause),
+    Rule = rule(Clause, PosList, NegList,InvF).
 
 findRelevantInventedFunctions([],_,[]).
 findRelevantInventedFunctions([H|T],InvF,[Bag|Rest]):-
@@ -297,6 +341,7 @@ generateRules(H,InvF,Exs,NExs,Rule):-
     Len>0,
 
     list_to_conj(B, Conj),
+
     Clause = (Head:-Conj),
     Head =.. [_|HArgs],
     
@@ -304,7 +349,7 @@ generateRules(H,InvF,Exs,NExs,Rule):-
 
     findRelevantInventedFunctions(B,InvF,FilteredInvF),
     flatten(FilteredInvF,FlatFilteredInvF),
-   
+    %%write(Clause),write('-->'),write(FlatFilteredInvF),nl,
     assertAll(FlatFilteredInvF),
     checkCoverage(Clause,FlatFilteredInvF,Exs,NExs,Rule),
     retractAll(FlatFilteredInvF).
@@ -361,37 +406,36 @@ body_complexity(Literal, 1) :-
 %----------------------------------------------------------
 assertAll([]).
 assertAll([H|T]):-
-    assertz(user:H),
+    assertz(H),
     assertAll(T).
 
 retractAll([]).
 retractAll([H|T]):-
-    retract(user:H),
+    retract(H),
     retractAll(T).
 
 learnFromFile(BKFile,ExampleFile,BiasFile):-
     
-    user:consult(BKFile),
-    user:consult(ExampleFile),
-    user:consult(BiasFile),
+    consult(BKFile),
+    consult(ExampleFile),
+    consult(BiasFile),
     
     writeln('Processing file and numerical values...'),
     
-    user:modeh(Head/HA,_),
+    modeh(Head/HA,_),
 
     findall(F,(length(V,HA),F=..[Head|V],pos(F)),ArrPos),
     findall(F,(length(V,HA),F=..[Head|V],neg(F)),ArrNeg),
 
-    generateBottomClause(ArrPos,[],PBC),
-    generateBottomClause(ArrNeg,[],NBC),
-    %maplist(bottomClausesPrint,BCs,PBC),
-    %maplist(bottomClausesPrint,BCs1,NBC),
-
+    generateBottomClause(ArrPos,[],BCs),
+    generateBottomClause(ArrNeg,[],BCs1),
+    maplist(bottomClausePrint,BCs,PBC),
+    maplist(bottomClausePrint,BCs1,NBC),
+    
     analyseNumbers(PBC,NBC,InventedFunctions,NewBC),
     
     maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions),NewBC,Hypos),
     
-   
     flatten(Hypos,FlatHypos),
     
     select_best_rule(FlatHypos, H),
