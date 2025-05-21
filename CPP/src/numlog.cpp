@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <limits>
 #include <string>
+#include <map>
+#include <set>
+
 using namespace std;
 
 // Calculate mean of a vector
@@ -305,7 +308,29 @@ vector<double> find_thresholds(const vector<double>& pos, const vector<double>& 
 
     return thresholds;
 }
+vector<string> convertToVectorString(term_t list) {
+    vector<string> vec;
+    term_t head = PL_new_term_ref();
+    term_t tail = PL_copy_term_ref(list);
 
+    while (PL_get_list(tail, head, tail)) {
+        char *str;
+
+        // Try to convert term to a string (covers atoms, strings, numbers)
+        if (PL_get_chars(head, &str, CVT_ALL | CVT_WRITE | BUF_DISCARDABLE)) {
+            vec.emplace_back(str);
+        } else {
+            cerr << "Error: Cannot convert term to string!" << endl;
+            return vec;
+        }
+    }
+
+    if (!PL_get_nil(tail)) {
+        cerr << "Error: Improper list!" << endl;
+    }
+
+    return vec;
+}
 // Convert Prolog list to vector (unchanged)
 vector<double> convertToVector(term_t list) {
     vector<double> vec;
@@ -329,7 +354,28 @@ vector<double> convertToVector(term_t list) {
 
     return vec;
 }
+// New function: Convert list of lists to vector<vector<double>>
+vector<vector<double>> convertToVectorOfVectors(term_t listOfLists) {
+    vector<vector<double>> result;
+    term_t head = PL_new_term_ref();
+    term_t tail = PL_copy_term_ref(listOfLists);
 
+    while (PL_get_list(tail, head, tail)) {
+        // Each head is a sublist
+        if (PL_is_list(head)) {
+            result.push_back(convertToVector(head));
+        } else {
+            cerr << "Error: Expected a list inside outer list!" << endl;
+            return result;
+        }
+    }
+
+    if (!PL_get_nil(tail)) {
+        cerr << "Error: Improper outer list!" << endl;
+    }
+
+    return result;
+}
 // Convert vector to Prolog list (unchanged)
 PlTerm convertToTerm(vector<double> vec) {
     term_t prolog_list = PL_new_term_ref();
@@ -369,6 +415,25 @@ PlTerm convertToTerm(vector<vector<double>> vec) {
     PlTerm pl_list(outer_list);
     return pl_list;
 }
+
+using namespace std;
+
+// Convert a vector<string> to a Prolog list of atoms
+PlTerm convertVectorStringToTerm(const vector<string>& vec) {
+    term_t list = PL_new_term_ref();       // Will hold the resulting list
+    PL_put_nil(list);                      // Start with an empty list
+
+    term_t elem = PL_new_term_ref();       // Temporary term for each element
+
+    // Build list from back to front
+    for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
+        PL_put_atom_chars(elem, it->c_str());  // Convert string to Prolog atom
+        PL_cons_list(list, elem, list);        // list = [elem | list]
+    }
+    PlTerm pl_list(list);
+    return pl_list;
+}
+
 void binningData(vector<double> pos, vector<double> neg, vector<double> threshold, vector<double> &leq, vector<vector<double>> &inRange, vector<double> &geq) {
 
     vector<double> temp;
@@ -444,5 +509,109 @@ PREDICATE(findThresholds, 5) {
     A4.unify_term(convertToTerm(inRange));
     A5.unify_term(convertToTerm(geq));
 
+    return true;
+}
+////////////////////////////////////Relations//////////////////////
+
+// Compare function to determine relation between two sets
+string compareSets(const vector<double>& a, const vector<double>& b) {
+    bool allLess = true, allGreater = true, allEqual = true;
+
+    for (int x : a) {
+        for (int y : b) {
+            if (x >= y) allLess = false;
+            if (x <= y) allGreater = false;
+            if (x != y) allEqual = false;
+        }
+    }
+
+    if (allEqual) return "=";
+    else if (allLess) return "<";
+    else if (allGreater) return ">";
+    else return "?"; // ambiguous or overlapping
+}
+
+// Attempt to build a totally ordered chain
+vector<string> findOrderedSubset(map<string, vector<double>>& datasets) {
+    vector<string> keys;
+    for (const auto& [k, _] : datasets) keys.push_back(k);
+
+    vector<string> bestChain;
+
+    // Try all subsets
+    size_t n = keys.size();
+    for (size_t mask = 1; mask < (1 << n); ++mask) {
+        vector<string> subset;
+        for (size_t i = 0; i < n; ++i)
+            if (mask & (1 << i)) subset.push_back(keys[i]);
+
+        bool valid = true;
+        for (size_t i = 0; i < subset.size(); ++i) {
+            for (size_t j = i + 1; j < subset.size(); ++j) {
+                string r = compareSets(datasets[subset[i]], datasets[subset[j]]);
+                if (r == "?") {
+                    valid = false;
+                    break;
+                }
+            }
+            if (!valid) break;
+        }
+
+        if (valid && subset.size() > bestChain.size())
+            bestChain = subset;
+    }
+
+    // Sort the bestChain using `<` relation
+    sort(bestChain.begin(), bestChain.end(), [&](const string& a, const string& b) {
+        return compareSets(datasets[a], datasets[b]) == "<";
+    });
+
+    return bestChain;
+}
+
+
+PREDICATE(findRelations, 3){
+
+    term_t pred_names = A1.unwrap();
+    term_t pred_values = A2.unwrap();
+
+    vector<string> terms = convertToVectorString(pred_names);
+    vector<vector<double>> values = convertToVectorOfVectors(pred_values);
+
+    map<string, vector<double>> datasets;
+
+    for(int i=0;i<terms.size();i++)
+    {
+        datasets[terms[i]] = values[i];
+    }
+    // Example input
+    //datasets["a"] = {70, 80};
+    //datasets["b"] = {40};
+    //datasets["c"] = {70, 80};  // this will be excluded
+
+    vector<string> chain = findOrderedSubset(datasets);
+
+    // Report excluded datasets
+    set<string> chainSet(chain.begin(), chain.end());
+    for (const auto& [k, _] : datasets) {
+        if (!chainSet.count(k))
+            cout << "Excluding dataset " << k << " due to ambiguous relation.\n";
+    }
+
+    // Output relation
+    vector<string> results;
+    //cout << "Valid ordering:\n";
+    if (!chain.empty()) {
+        //cout << chain[0];
+        results.push_back(chain[0]);
+        for (size_t i = 1; i < chain.size(); ++i) {
+            //cout << " < " << chain[i];
+            results.push_back(chain[i]);
+        }
+        //cout << endl;
+    } //else {
+       // cout << "No valid ordering.\n";
+    //}
+    A3.unify_term(convertVectorStringToTerm(results));
     return true;
 }
