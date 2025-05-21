@@ -1,7 +1,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%% Numlog: numerical learning and reasoning using ILP %%%%%%%%%%%%%%%%%%%%%%%%
 %                                           Version: 2                                                  %
 %                                    Main Author: Daniel Cyrus                                          %
-%                            This version can learn from higher order relations                         % 
+%                            Learning numerical data using ILP and GMM                                  % 
 %                                            The HMLR lab                                               %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 :- module(numlog, [learnFromFile/3]).
@@ -33,11 +33,61 @@ leq(X,Value):-
 geq(X,Value):-
     number(X),
     X >= Value.
+%=====================Find relations=============================
+replace_in_list(_, _, [], []).
+replace_in_list(Old, New, [Old|T], [New|T2]) :-
+    replace_in_list(Old, New, T, T2).
 
-relations(A, B, Op) :-
-    number(A),
-    number(B),
-    A > B -> Op = '>'; Op = '<'.
+replace_in_list(Old, New, [H|T], [H|T2]) :-
+    H \= Old,
+    replace_in_list(Old, New, T, T2).
+
+groupGroupedExamples([],List,List).
+groupGroupedExamples([Term-A-Values|T],List,Temp):-
+     ((member(Term1-A1-Values1, List),A1==A) ->
+     (append([Values1],[Values],Values2),
+     append([Term1],[Term],Term2),
+     replace_in_list(Term1-A1-Values1, Term2-A1-Values2,List,List1));
+     append(List,[Term-A-Values],List1)),
+     groupGroupedExamples(T,List1,Temp).
+
+relations([],Rel,Rel).
+relations([Terms-Var-Values|T],Rel,R):-
+    findRelations(Terms,Values,Rel1),
+    append(Rel,[Var=>Rel1],Rel2),
+    relations(T,Rel2,R).
+
+convertRelations(A => Preds, A => Goal) :-
+    NewVar = _,
+    build_preds(Preds, NewVar, Calls, Vars),
+    build_comparisons(Vars, Comps),
+    append(Calls, Comps, AllGoals),
+    list_to_conj(AllGoals, Goal1),
+    Goal2 = (relations(NewVar):-Goal1),
+    copy_term(Goal2,Goal).
+
+% build_preds(+PredList, +Subject, -Calls, -Vars)
+build_preds([], _, [], []).
+build_preds([Pred|Rest], A, [Call|Calls], [Var|Vars]) :-
+    Call =.. [Pred, A, Var],
+    build_preds(Rest, A, Calls, Vars).
+
+% build_comparisons(+Vars, -Comparisons)
+build_comparisons([_], []).
+build_comparisons([V1, V2 | Rest], [V1 < V2 | Comps]) :-
+    build_comparisons([V2 | Rest], Comps).
+
+generateRelationTerms([],Rel,Rel).
+generateRelationTerms([Var=>Terms|T],Rel,Rel2):-
+    (length(Terms,L),L>1-> convertRelations(Var=>Terms,RelTerms),append(Rel,[RelTerms],Rel1);Rel1=Rel),
+    generateRelationTerms(T,Rel1,Rel2).
+
+
+relations(Ex, Rel) :-
+   groupGroupedExamples(Ex,[],GEx),
+   relations(GEx,[],Relations),
+   generateRelationTerms(Relations,[],Rel).
+    
 %-------------------------------------------
 
 combination([], []).
@@ -168,12 +218,12 @@ head_connectedness(Args,Body):-
     %flatten_conjunction(Body,Body1),
     getAllArgs(Body,[],BArgs),
     sort(BArgs, Sorted),
-    %length(Body,L),
-    % (L > 1 ->
-    %     length(BArgs,LBA),
-    %     sort(BArgs, Sorted),
-    %     length(Sorted,LS),
-    %     LS<LBA;true),
+    length(Body,L),
+     (L > 1 ->
+         length(BArgs,LBA),
+         sort(BArgs, Sorted),
+         length(Sorted,LS),
+         LS<LBA;true),
     ifAll(Args,Sorted).
 
 %---------------------------------------------------------
@@ -219,14 +269,16 @@ bottomClausePrint(Term, Numbered) :-
         Numbered = Copy.                     % Return the numbered version
     
 
-analyseNumbers(Pos,Neg,F,NewBC):-
+analyseNumbers(Pos,Neg,F,Relations,NewBC):-
         flatten(Pos,FlatPos),
         flatten(Neg,FlatNeg),
         cluster_vars_by_numbers(FlatPos,GroupedPos,Filtered),
         cluster_vars_by_numbers(FlatNeg,GroupedNeg,_),
         groupRefinementBottomClauses(Pos,Filtered,[],NewBC),
         %write(NewBC),nl,
-        %write(FlatNeg),nl,
+         %==========relations should be somewhere here.
+        relations(GroupedPos,Relations),
+        %write(Relations),nl,
         extractAndProcessGMM(GroupedPos,GroupedNeg,[],F).
 
 
@@ -311,7 +363,7 @@ restore_args([H|T], [H2|T2], MapIn, MapOut) :-
     
 %-------------------------------------------------
 
-checkCoverage(Clause,InvF,Pos,Neg,Rule):-
+checkCoverage(Clause,InvF,Rel,Pos,Neg,Rule):-
     restore_vars(Clause, NewClause),
     %copy_term(NewClause, NewClause1),
     assertz(NewClause),
@@ -319,19 +371,19 @@ checkCoverage(Clause,InvF,Pos,Neg,Rule):-
     entailExamples(Pos,[],PosList),
     entailExamples(Neg,[],NegList),
     retract(NewClause),
-    Rule = rule(Clause, PosList, NegList,InvF).
+    Rule = rule(Clause, PosList, NegList,InvF,Rel).
 
-findRelevantInventedFunctions([],_,[]).
-findRelevantInventedFunctions([H|T],InvF,[Bag|Rest]):-
+findRelevantFunctions([],_,[]).
+findRelevantFunctions([H|T],InvF,[Bag|Rest]):-
     H =.. [_|Args],
     length(Args,Len),
     (Len = 1 ->
         nth0(0,Args,A1),
         findall(C,(nth0(_,InvF,(A=>C)),A==A1),Bag);
         Bag = []),
-        findRelevantInventedFunctions(T,InvF,Rest).
+        findRelevantFunctions(T,InvF,Rest).
 
-generateRules(H,InvF,Exs,NExs,Rule):-
+generateRules(H,InvF,Exs,NExs,Relations,Rule):-
     H = [Head|Body],
     
     between(1,3,N),  % add max clause here
@@ -346,18 +398,21 @@ generateRules(H,InvF,Exs,NExs,Rule):-
     Head =.. [_|HArgs],
     
     head_connectedness(HArgs,B),%head_connectedness
-
-    findRelevantInventedFunctions(B,InvF,FilteredInvF),
+    findRelevantFunctions(B,InvF,FilteredInvF),
+    findRelevantFunctions(B,Relations,FilteredRelF),
     flatten(FilteredInvF,FlatFilteredInvF),
+    flatten(FilteredRelF,FlatFilteredRelF),
     %%write(Clause),write('-->'),write(FlatFilteredInvF),nl,
     assertAll(FlatFilteredInvF),
-    checkCoverage(Clause,FlatFilteredInvF,Exs,NExs,Rule),
+    assertAll(FlatFilteredRelF),
+    checkCoverage(Clause,FlatFilteredInvF,FlatFilteredRelF,Exs,NExs,Rule),
+    retractAll(FlatFilteredRelF),
     retractAll(FlatFilteredInvF).
 
 
 
-hypothesisSpace(Exs,NExs,InvF,BCs,Rules):-
-    findall(R, generateRules(BCs,InvF,Exs,NExs,R), Rules).
+hypothesisSpace(Exs,NExs,InvF,Relations,BCs,Rules):-
+    findall(R, generateRules(BCs,InvF,Exs,NExs,Relations,R), Rules).
 
 %------------------Best rule from hypothesis space----------------
 
@@ -388,7 +443,7 @@ compare_rules(_, Rule2, Rule2).
 % - PosCount: Number of positive examples
 % - NegCount: Number of negative examples
 % - Complexity: Number of literals in the body (excluding true)
-rule_metrics(rule((_:-Body), Pos, Neg,_), PosCount, NegCount, Complexity) :-
+rule_metrics(rule((_:-Body), Pos, Neg,_,_), PosCount, NegCount, Complexity) :-
     length(Pos, PosCount),
     length(Neg, NegCount),
     body_complexity(Body, Complexity).
@@ -432,17 +487,18 @@ learnFromFile(BKFile,ExampleFile,BiasFile):-
     maplist(bottomClausePrint,BCs,PBC),
     maplist(bottomClausePrint,BCs1,NBC),
     
-    analyseNumbers(PBC,NBC,InventedFunctions,NewBC),
-    
-    maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions),NewBC,Hypos),
+    analyseNumbers(PBC,NBC,InventedFunctions,Relations,NewBC),
+    maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions,Relations),NewBC,Hypos),
     
     flatten(Hypos,FlatHypos),
-    
+    %write(Relations),
+
     select_best_rule(FlatHypos, H),
-    H = rule((FinalRule),_,_,InvF),
+    H = rule((FinalRule),_,_,InvF,Rel),
     writeln('Final Rule:'),
     write(FinalRule),nl,
-    maplist(writeln,InvF).
+    maplist(writeln,InvF),
+    maplist(writeln,Rel).
     %maplist(bottomClausesPrint,FinalRule,FinalRule1),
     %write(FinalRule1).  
 
