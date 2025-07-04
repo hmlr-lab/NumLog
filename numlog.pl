@@ -9,6 +9,7 @@
 :-use_foreign_library('libnumlog.so').
 
 :-op(500, xfy, user:(±)). 
+:-op(500, fx, #). 
 
 :-op(500, xfy, =>).
 :- dynamic modeh/2, modeb/2.
@@ -125,23 +126,31 @@ bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
     separate_pairs(G,Gs,Bs,Ps),
     flatten(Bs, FlatList_Bs),
     flatten(Ps, FlatList_Ps),
-    findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),nth1(N, FlatList_Ps, out),nth1(N,FlatList_Bs,NB)),FlatList),
+
+    findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),((nth1(N, FlatList_Ps, const),nth1(N,FlatList_Bs,(NB1)),NB=(#NB1));
+                                                         (nth1(N, FlatList_Ps, out),nth1(N,FlatList_Bs,NB))
+                                                         )),FlatList),
+                                                         
+                                                        
     append(Predicates,Gs,Per1),
     append(Arity,Arities,Ar1),
     sort(Ar1,Ar_1),
     once(filter_not_in_list(Ar_1,FlatList,NewBs)),
     bottomClause(NewBs,Per1,Ar_1,Predicates1,Arities1).
 
+getTrueVal(L,L2,X,Val):-
+    (member(#X,L)->
+    Val = X;
+    (number(X)->
+    Val = X;
+    nth0(Index,L,X),nth0(Index,L2,Val))).
 
-getVarEq(List1,List2,Elem1,Elem2):-
-    nth0(Index, List1, Elem1),
-    (number(Elem1)-> Elem2=Elem1;
-    nth0(Index, List2, Elem2)).
 
 add_variable([],_,_,List,List).
 add_variable([H|T],List1,List2,List,NewList):-
+    
     H =.. [Cl|Args],
-    maplist(getVarEq(List1,List2),Args,Vars),
+    maplist(getTrueVal(List1,List2),Args,Vars),
     NewH =..[Cl|Vars],
     append(List,[NewH],List3),
     add_variable(T,List1,List2,List3,NewList).
@@ -200,7 +209,7 @@ ifAll([X|Xs], B) :-
 
 getAllArgs([],A,B):-flatten(A,B).
 getAllArgs([H|T],Args,A):-
-    %writeln(H),
+   
     (H =.. [_|BArgs] ->
     append(Args,[BArgs],A1);
     A1=Args),
@@ -212,19 +221,28 @@ getAllArgs([H|T],Args,A):-
 %     flatten_conjunction(B, ListB),
 %     append(ListA, ListB, List).
 % flatten_conjunction(A, [A]).
-    
+countSingleArgs([],_,LC,LC).
+countSingleArgs([H|T],L,LC,LC1):-
+   
+    (member(H, L) ->
+    (nth0(Index, L, H),
+    nth0(Index, LC, Count),
+    NewCount is Count + 1,
+    replace_in_list(Count, NewCount, LC, NewLC),NewL=L);
+    (append(L, [H], NewL),
+    (var(H) -> append(LC, [1], NewLC);append(LC, [2], NewLC)))),
+    countSingleArgs(T, NewL, NewLC,LC1).
 
+
+greater_than_one(X) :- X > 1.
 head_connectedness(Args,Body):-
     %flatten_conjunction(Body,Body1),
     getAllArgs(Body,[],BArgs),
-    sort(BArgs, Sorted),
-    length(Body,L),
-     (L > 1 ->
-         length(BArgs,LBA),
-         sort(BArgs, Sorted),
-         length(Sorted,LS),
-         LS<LBA;true),
-    ifAll(Args,Sorted).
+    append(Args, BArgs, AllArgs),
+    countSingleArgs(AllArgs,[],[],Counts),
+    maplist(greater_than_one,Counts).
+
+   
 
 %---------------------------------------------------------
 refinementBottomClauses([],_,NewBC,NewBC).
@@ -383,21 +401,27 @@ findRelevantFunctions([H|T],InvF,[Bag|Rest]):-
         Bag = []),
         findRelevantFunctions(T,InvF,Rest).
 
-generateRules(H,InvF,Exs,NExs,Relations,Rule):-
-    H = [Head|Body],
-    
-    between(1,3,N),  % add max clause here
-    combinations_conjunction(Body,N,B),
-    
-    length(B,Len),
-    Len>0,
+get_at_indices([], _, []).
+get_at_indices([I|Is], List, [Elem|Rest]) :-
+    nth0(I, List, Elem),
+    get_at_indices(Is, List, Rest).
 
-    list_to_conj(B, Conj),
-
-    Clause = (Head:-Conj),
+generateRules(_,_,_,_,_,[],Rule,Rule).
+generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
+    %between(1,3,N),  % add max clause here
+    %combinations_conjunction(Body,N,B),
+    get_at_indices(H,BCs,B),
+   
+    BCs = [Head|_],
     Head =.. [_|HArgs],
     
-    head_connectedness(HArgs,B),%head_connectedness
+    (head_connectedness(HArgs,B)-> %head_connectedness
+    (
+  
+    list_to_conj(B, Conj),
+    
+    Clause = (Head:-Conj),
+
     findRelevantFunctions(B,InvF,FilteredInvF),
     findRelevantFunctions(B,Relations,FilteredRelF),
     flatten(FilteredInvF,FlatFilteredInvF),
@@ -405,14 +429,20 @@ generateRules(H,InvF,Exs,NExs,Relations,Rule):-
     %%write(Clause),write('-->'),write(FlatFilteredInvF),nl,
     assertAll(FlatFilteredInvF),
     assertAll(FlatFilteredRelF),
-    checkCoverage(Clause,FlatFilteredInvF,FlatFilteredRelF,Exs,NExs,Rule),
+    checkCoverage(Clause,FlatFilteredInvF,FlatFilteredRelF,Exs,NExs,Rule2),
+    append(Rule,[Rule2],Rule3),
     retractAll(FlatFilteredRelF),
-    retractAll(FlatFilteredInvF).
-
+    retractAll(FlatFilteredInvF)
+    );
+    Rule3=Rule),
+    generateRules(BCs,InvF,Exs,NExs,Relations,T,Rule3,Rule1).
 
 
 hypothesisSpace(Exs,NExs,InvF,Relations,BCs,Rules):-
-    findall(R, generateRules(BCs,InvF,Exs,NExs,Relations,R), Rules).
+    length(BCs,Len),
+    combinations(Len,3,Comb),
+   
+    generateRules(BCs,InvF,Exs,NExs,Relations,Comb ,[],Rules).
 
 %------------------Best rule from hypothesis space----------------
 
@@ -488,15 +518,15 @@ learnFromFile(BKFile,ExampleFile,BiasFile):-
     maplist(bottomClausePrint,BCs1,NBC),
     
     analyseNumbers(PBC,NBC,InventedFunctions,Relations,NewBC),
+    
     maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions,Relations),NewBC,Hypos),
     
     flatten(Hypos,FlatHypos),
-    %write(Relations),
-
+   
     select_best_rule(FlatHypos, H),
     H = rule((FinalRule),_,_,InvF,Rel),
     writeln('Final Rule:'),
-    write(FinalRule),nl,
+    write(FinalRule),write('.'),nl,
     maplist(writeln,InvF),
     maplist(writeln,Rel).
     %maplist(bottomClausesPrint,FinalRule,FinalRule1),
