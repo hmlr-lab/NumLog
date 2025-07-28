@@ -46,16 +46,19 @@ replace_in_list(Old, New, [H|T], [H|T2]) :-
 groupGroupedExamples([],List,List).
 groupGroupedExamples([Term-A-Values|T],List,Temp):-
      ((member(Term1-A1-Values1, List),A1==A) ->
-     (append([Values1],[Values],Values2),
-     append([Term1],[Term],Term2),
+     (
+     flatten(Term1,FTerm1),
+     append(Values1,[Values],Values2),
+     append(FTerm1,[Term],Term2),
      replace_in_list(Term1-A1-Values1, Term2-A1-Values2,List,List1));
-     append(List,[Term-A-Values],List1)),
+     append(List,[Term-A-[Values]],List1)),
      groupGroupedExamples(T,List1,Temp).
 
 relations([],Rel,Rel).
 relations([Terms-Var-Values|T],Rel,R):-
     findRelations(Terms,Values,Rel1),
     append(Rel,[Var=>Rel1],Rel2),
+    writeln(Values),
     relations(T,Rel2,R).
 
 convertRelations(A => Preds, A => Goal) :-
@@ -128,7 +131,7 @@ bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
     flatten(Ps, FlatList_Ps),
 
     findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),((nth1(N, FlatList_Ps, const),nth1(N,FlatList_Bs,(NB1)),NB=(#NB1));
-                                                         (nth1(N, FlatList_Ps, out),nth1(N,FlatList_Bs,NB))
+                                                         ((nth1(N, FlatList_Ps, out);nth1(N, FlatList_Ps, number)),nth1(N,FlatList_Bs,NB))
                                                          )),FlatList),
                                                          
                                                         
@@ -267,10 +270,16 @@ cluster_vars_by_numbers(Terms, Grouped,Filtered) :-
     sort(0, @=<, Pairs, Ps),
     group_pairs_by_key(Ps, Grouped).
 
+checkIfNumber(Values,Index):-
+    nth0(Index, Values, Value),
+    number(Value).
+
 % Keep only terms with numeric values
 only_numbers(T) :-
-    T =.. [_, _, Value],
-    number(Value).
+    T =.. [T1|Values],
+    modeb(T1/_,Modes),
+    findall(Nums,nth0(Nums,Modes,number),Bag),
+    maplist(checkIfNumber(Values),Bag).
 % Turn a(Var, Val) into Var-Val
 collect_pairs([], []).
 collect_pairs([H|T], [Term - Var - Val|Rest]) :-
@@ -284,9 +293,8 @@ bottomClausePrint1(Term,Copy) :-
 bottomClausePrint(Term, Numbered) :-
         copy_term(Term, Copy),
         numbervars(Copy, 0, _),  % Number all variables in the copy
-        Numbered = Copy.                     % Return the numbered version
+        Numbered = Copy.         % Return the numbered version
     
-
 analyseNumbers(Pos,Neg,F,Relations,NewBC):-
         flatten(Pos,FlatPos),
         flatten(Neg,FlatNeg),
@@ -419,7 +427,6 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
     (
   
     list_to_conj(B, Conj),
-    
     Clause = (Head:-Conj),
 
     findRelevantFunctions(B,InvF,FilteredInvF),
@@ -441,7 +448,6 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
 hypothesisSpace(Exs,NExs,InvF,Relations,BCs,Rules):-
     length(BCs,Len),
     combinations(Len,3,Comb),
-   
     generateRules(BCs,InvF,Exs,NExs,Relations,Comb ,[],Rules).
 
 %------------------Best rule from hypothesis space----------------
