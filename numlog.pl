@@ -58,7 +58,6 @@ relations([],Rel,Rel).
 relations([Terms-Var-Values|T],Rel,R):-
     findRelations(Terms,Values,Rel1),
     append(Rel,[Var=>Rel1],Rel2),
-    writeln(Values),
     relations(T,Rel2,R).
 
 convertRelations(A => Preds, A => Goal) :-
@@ -248,20 +247,24 @@ head_connectedness(Args,Body):-
    
 
 %---------------------------------------------------------
-refinementBottomClauses([],_,NewBC,NewBC).
-refinementBottomClauses([H|T],Filtered,NewBC,Temp):-
+refinementBottomClauses([],_,_,NewBC,NewBC).
+refinementBottomClauses([H|T],HasRel,Filtered,NewBC,Temp):-
     (member(H, Filtered)->
     (H =.. [Cl,Var|_],
     H1 =..[Cl,Var],
-    append(NewBC,[H1],NewBC1));
-    append(NewBC, [H], NewBC1)),    
-    refinementBottomClauses(T,Filtered,NewBC1,Temp).
+    append(NewBC,[H1],NewBC_1),
 
-groupRefinementBottomClauses([],_,NewBC,NewBC).
-groupRefinementBottomClauses([H|T],Filtered,NewBC,Temp):-
-    refinementBottomClauses(H,Filtered,[],NewBC1),
+    Rel =..[relations,Var],
+    ((HasRel,not(member(Rel,NewBC))) -> append(NewBC_1,[Rel],NewBC1);NewBC1= NewBC_1)
+    );
+    append(NewBC, [H], NewBC1)),    
+    refinementBottomClauses(T,HasRel,Filtered,NewBC1,Temp).
+
+groupRefinementBottomClauses([],_,_,NewBC,NewBC).
+groupRefinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
+    refinementBottomClauses(H,Filtered,HasRel,[],NewBC1),
     append(NewBC,[NewBC1],NewBC2),
-    groupRefinementBottomClauses(T,Filtered,NewBC2,Temp).
+    groupRefinementBottomClauses(T,HasRel,Filtered,NewBC2,Temp).
 
 % Main predicate
 cluster_vars_by_numbers(Terms, Grouped,Filtered) :-
@@ -300,11 +303,13 @@ analyseNumbers(Pos,Neg,F,Relations,NewBC):-
         flatten(Neg,FlatNeg),
         cluster_vars_by_numbers(FlatPos,GroupedPos,Filtered),
         cluster_vars_by_numbers(FlatNeg,GroupedNeg,_),
-        groupRefinementBottomClauses(Pos,Filtered,[],NewBC),
+        relations(GroupedPos,Relations),
+        (length(Relations,LenR),LenR > 0 ->HasRel=true;HasRel=fail),
+        groupRefinementBottomClauses(Pos,Filtered,HasRel,[],NewBC),
         %write(NewBC),nl,
          %==========relations should be somewhere here.
-        relations(GroupedPos,Relations),
-        %write(Relations),nl,
+        
+        
         extractAndProcessGMM(GroupedPos,GroupedNeg,[],F).
 
 
