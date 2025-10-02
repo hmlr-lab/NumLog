@@ -6,9 +6,13 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 :- module(numlog, [learnFromFile/3]).
 
-:-use_foreign_library('libnumlog.so').
+:- use_module(library(clpfd)).
+:- use_module(library(assoc)).
+:- use_foreign_library('libnumlog.so').
 
-:-op(500, xfy, user:(±)). 
+%:-op(500, xfy, user:(±)). 
+:-op(500, xfy, user:(μ)). 
+:-op(500, xfy, user:(σ)). 
 :-op(500, fx, #). 
 
 :-op(500, xfy, =>).
@@ -16,33 +20,56 @@
 :- dynamic pos/1.
 :- dynamic neg/1.
 %---------------------------------------------------------------
+% def gaussian_pdf(x, mean, var):
+%     # Handle very small/zero variance
+%     if var <= 1e-6:
+%         # Fallback: distance-based score (higher when closer)
+%         dist = abs(x - mean)
+%         return 1.0 / (1.0 + dist)
+%     else:
+%         coeff = 1.0 / np.sqrt(2 * np.pi * var)
+%         exponent = np.exp(-((x - mean) ** 2) / (2 * var))
+%         return coeff * exponent
+
+% # -----------------------------
+% # Assign cluster to a value
+% # -----------------------------
+% def assign_cluster(x, clusters):
+%     scores = []
+%     for c in clusters:
+%         score = gaussian_pdf(x, c["mean"], c["variance"])
+%         scores.append((c["id"], c["polarity"], score))
+%     # pick cluster with max score
+%     best = max(scores, key=lambda t: t[2])
+%     return best  # (id, polarity, score)
 %-------------------Operator---------------
-checkInRange(X, Value ± Range):-
-    X =< Value + Range,
-    X >= Value - Range.
+gaussian_pdf(X, (μ(Mean),σ(Var)), Score) :-
+    (Var =< 1e-6 ->
+        Dist is abs(X - Mean),
+        Score is 1.0 / (1.0 + Dist)
+    ;
+        Coeff is 1.0 / sqrt(2 * pi * Var),
+        Exponent is exp(-((X - Mean) ** 2) / (2 * Var)),
+        Score is Coeff * Exponent
+    ).
 
-inRange(X,Ranges):-
+inCluster(X,pos(PosGauss),neg(NegGauss)):-
     number(X),
-    include(checkInRange(X),Ranges,Filtered),
-    length(Filtered,L),
-    L > 0.
+    maplist(gaussian_pdf(X),PosGauss,PosScors),
+    maplist(gaussian_pdf(X),NegGauss,NegScors),
+    max_list(PosScors,MaxPos),
+    max_list(NegScors,MaxNeg),
+    MaxPos > MaxNeg.
 
-leq(X,Value):-
-    number(X),
-    X =< Value.
-
-geq(X,Value):-
-    number(X),
-    X >= Value.
 %=====================Find relations=============================
 replace_in_list(_, _, [], []).
 replace_in_list(Old, New, [Old|T], [New|T2]) :-
     replace_in_list(Old, New, T, T2).
 
 replace_in_list(Old, New, [H|T], [H|T2]) :-
-    H \= Old,
+    not(H == Old),
     replace_in_list(Old, New, T, T2).
-
+%%%%%%%%%%%-------------------------MAY NEED TO CHANGE HERE-----------------%%%%%%%%%%%%
 groupGroupedExamples([],List,List).
 groupGroupedExamples([Term-A-Values|T],List,Temp):-
      ((member(Term1-A1-Values1, List),A1==A) ->
@@ -54,25 +81,24 @@ groupGroupedExamples([Term-A-Values|T],List,Temp):-
      append(List,[Term-A-[Values]],List1)),
      groupGroupedExamples(T,List1,Temp).
 
-relations([],Rel,Rel).
-relations([Terms-Var-Values|T],Rel,R):-
-    findRelations(Terms,Values,Rel1),
-    append(Rel,[Var=>Rel1],Rel2),
-    relations(T,Rel2,R).
+
 
 convertRelations(A => Preds, A => Goal) :-
-    NewVar = _,
+    length(A,LA),
+    length(NewVar,LA),
+    %NewVar = _,
     build_preds(Preds, NewVar, Calls, Vars),
     build_comparisons(Vars, Comps),
     append(Calls, Comps, AllGoals),
     list_to_conj(AllGoals, Goal1),
-    Goal2 = (relations(NewVar):-Goal1),
+    Rel =.. [relations|NewVar],
+    Goal2 = (Rel:-Goal1),
     copy_term(Goal2,Goal).
 
-% build_preds(+PredList, +Subject, -Calls, -Vars)
 build_preds([], _, [], []).
 build_preds([Pred|Rest], A, [Call|Calls], [Var|Vars]) :-
-    Call =.. [Pred, A, Var],
+    append(A,[Var],Args),
+    Call =.. [Pred | Args],
     build_preds(Rest, A, Calls, Vars).
 
 % build_comparisons(+Vars, -Comparisons)
@@ -85,10 +111,18 @@ generateRelationTerms([Var=>Terms|T],Rel,Rel2):-
     (length(Terms,L),L>1-> convertRelations(Var=>Terms,RelTerms),append(Rel,[RelTerms],Rel1);Rel1=Rel),
     generateRelationTerms(T,Rel1,Rel2).
 
+cppRelations([],Rel,Rel).
+cppRelations([Terms-Var-Values|T],Rel,R):-
+    maplist(transpose,Values, Transpose),
+    (length(Transpose, 1)->Transpose = [FF];
+    maplist(flatten,Transpose,FF)),
+    findRelations(Terms,FF,Rel1),
+    append(Rel,[Var=>Rel1],Rel2),
+    cppRelations(T,Rel2,R).
 
-relations(Ex, Rel) :-
+cppRelations(Ex, Rel) :-
    groupGroupedExamples(Ex,[],GEx),
-   relations(GEx,[],Relations),
+   cppRelations(GEx,[],Relations),
    generateRelationTerms(Relations,[],Rel).
     
 %-------------------------------------------
@@ -130,7 +164,7 @@ bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
     flatten(Ps, FlatList_Ps),
 
     findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),((nth1(N, FlatList_Ps, const),nth1(N,FlatList_Bs,(NB1)),NB=(#NB1));
-                                                         ((nth1(N, FlatList_Ps, out);nth1(N, FlatList_Ps, number)),nth1(N,FlatList_Bs,NB))
+                                                         ((nth1(N, FlatList_Ps, out);nth1(N, FlatList_Ps, numeric)),nth1(N,FlatList_Bs,NB))
                                                          )),FlatList),
                                                          
                                                         
@@ -223,42 +257,66 @@ getAllArgs([H|T],Args,A):-
 %     flatten_conjunction(B, ListB),
 %     append(ListA, ListB, List).
 % flatten_conjunction(A, [A]).
-countSingleArgs([],_,LC,LC).
-countSingleArgs([H|T],L,LC,LC1):-
-   
-    (member(H, L) ->
-    (nth0(Index, L, H),
-    nth0(Index, LC, Count),
-    NewCount is Count + 1,
-    replace_in_list(Count, NewCount, LC, NewLC),NewL=L);
-    (append(L, [H], NewL),
-    (var(H) -> append(LC, [1], NewLC);append(LC, [2], NewLC)))),
-    countSingleArgs(T, NewL, NewLC,LC1).
+count_vars(List, AssocOut) :-
+    empty_assoc(Empty),
+    count_vars(List, Empty, AssocOut).
+
+count_vars([], Assoc, Assoc).
+count_vars([H|T], AssocIn, AssocOut) :-
+    ( get_assoc(H, AssocIn, Count) ->
+        NewCount is Count + 1,
+        put_assoc(H, AssocIn, NewCount, AssocMid)
+    ;
+        put_assoc(H, AssocIn, 1, AssocMid)
+    ),
+    count_vars(T, AssocMid, AssocOut).
+single_occurrence_vars(Assoc) :-
+    assoc_to_list(Assoc, Pairs),
+    findall(Var, (member(Var-1, Pairs), var(Var)), Vars),length(Vars,0).
+
+% Entry point
+const_to_vars(List, VarList) :-
+    const_to_vars(List, [], VarList, _).
+
+% Base case: no more elements
+const_to_vars([], _, [], _).
+
+% If the constant is already mapped, reuse its variable
+const_to_vars([X|Xs], MapIn, [Var|Vars], MapOut) :-
+    
+    memberchk(X-Var, MapIn), !,
+    const_to_vars(Xs, MapIn, Vars, MapOut).
+
+% If it's a new constant, create a new variable and add to map
+const_to_vars([X|Xs], MapIn, [Var|Vars], MapOut) :-
+    \+ memberchk(X-_, MapIn),
+    const_to_vars(Xs, [X-Var|MapIn], Vars, MapOut).
 
 
-greater_than_one(X) :- X > 1.
 head_connectedness(Args,Body):-
     %flatten_conjunction(Body,Body1),
     getAllArgs(Body,[],BArgs),
     append(Args, BArgs, AllArgs),
-    countSingleArgs(AllArgs,[],[],Counts),
-    maplist(greater_than_one,Counts).
+    const_to_vars(AllArgs, VarAllArgs),
+    count_vars(VarAllArgs, Assoc), single_occurrence_vars(Assoc).
 
    
-
 %---------------------------------------------------------
 refinementBottomClauses([],_,_,NewBC,NewBC).
-refinementBottomClauses([H|T],HasRel,Filtered,NewBC,Temp):-
+refinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
     (member(H, Filtered)->
-    (H =.. [Cl,Var|_],
-    H1 =..[Cl,Var],
+    (
+    H =.. [Term|Vars],
+    modeb(Term/_,Modes),
+    findall(Var,(nth0(Index,Modes,in),nth0(Index,Vars,Var)),Bag),
+    H1 =..[Term|Bag],
     append(NewBC,[H1],NewBC_1),
-
-    Rel =..[relations,Var],
+    Rel =..[relations|Bag],
     ((HasRel,not(member(Rel,NewBC))) -> append(NewBC_1,[Rel],NewBC1);NewBC1= NewBC_1)
     );
     append(NewBC, [H], NewBC1)),    
-    refinementBottomClauses(T,HasRel,Filtered,NewBC1,Temp).
+    refinementBottomClauses(T,Filtered,HasRel,NewBC1,Temp).
+
 
 groupRefinementBottomClauses([],_,_,NewBC,NewBC).
 groupRefinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
@@ -266,7 +324,7 @@ groupRefinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
     append(NewBC,[NewBC1],NewBC2),
     groupRefinementBottomClauses(T,HasRel,Filtered,NewBC2,Temp).
 
-% Main predicate
+% Analysis of numerical values
 cluster_vars_by_numbers(Terms, Grouped,Filtered) :-
     include(only_numbers, Terms, Filtered),     % Keep only a(_, Number) where Number is numeric
     collect_pairs(Filtered, Pairs),             % Convert to [Var-Value, ...]
@@ -281,12 +339,22 @@ checkIfNumber(Values,Index):-
 only_numbers(T) :-
     T =.. [T1|Values],
     modeb(T1/_,Modes),
-    findall(Nums,nth0(Nums,Modes,number),Bag),
-    maplist(checkIfNumber(Values),Bag).
+    findall(Nums,nth0(Nums,Modes,numeric),Bag),
+    length(Bag,Len),
+    (Len > 0 ->
+    maplist(checkIfNumber(Values),Bag);fail).
+    
 % Turn a(Var, Val) into Var-Val
+% collect_pairs([], []).
+% collect_pairs([H|T], [Term - Var - Val|Rest]) :-
+%     H =.. [Term, Var, Val],  % Extract Var and Val
+%     collect_pairs(T, Rest).
+notNumber(X) :- \+ number(X).
 collect_pairs([], []).
-collect_pairs([H|T], [Term - Var - Val|Rest]) :-
-    H =.. [Term, Var, Val],  % Extract Var and Val
+collect_pairs([H|T], [Term - NNs - Ns|Rest]) :-
+    H =.. [Term| Var],  % Extract Var and Val
+    include(number, Var, Ns),     % Ensure Val is numeric
+    include(notNumber, Var, NNs), % Ensure Val is numeric
     collect_pairs(T, Rest).
 
 bottomClausePrint1(Term,Copy) :-
@@ -303,33 +371,18 @@ analyseNumbers(Pos,Neg,F,Relations,NewBC):-
         flatten(Neg,FlatNeg),
         cluster_vars_by_numbers(FlatPos,GroupedPos,Filtered),
         cluster_vars_by_numbers(FlatNeg,GroupedNeg,_),
-        relations(GroupedPos,Relations),
+        cppRelations(GroupedPos,Relations),
         (length(Relations,LenR),LenR > 0 ->HasRel=true;HasRel=fail),
         groupRefinementBottomClauses(Pos,Filtered,HasRel,[],NewBC),
-        %write(NewBC),nl,
-         %==========relations should be somewhere here.
-        
-        
         extractAndProcessGMM(GroupedPos,GroupedNeg,[],F).
 
-
-
-    inRangeStandardisation([],Ranges,Ranges).
-    inRangeStandardisation([H|T],Ranges,Temp):-
-            (H \= []->
-            (sum_list(H, Sum),
-            length(H, Len),
-            min_list(H, Min),
-            Mean is Sum / Len,
-            Range is Mean -  Min,
-            append(Ranges, [Mean ± Range], Ranges1));
-            Ranges1=Ranges),
-            inRangeStandardisation(T,Ranges1,Temp).
+addSigns([],[]).
+addSigns([H|T],[Sign|Rest]):-
+    H = [Mean, StdDev],
+    Sign = (μ(Mean),σ(StdDev)),
+    addSigns(T,Rest).
         
-        
-    make_list(A, B, C, D) :-
-            include(nonvar, [A, B, C], D).   
-    
+
 list_to_disjunction([X], X) :- !.
 list_to_disjunction([H|T], (H ; Rest)) :-
             list_to_disjunction(T, Rest).
@@ -340,13 +393,25 @@ extractAndProcessGMM([Term-Var-ValuePos|RestPos],Neg,FunctionsInvention,Rest):-
         nth0(Index, Neg, _-_-N1),
         ValueNeg=N1;
         ValueNeg=[]),
-        findThresholds(ValuePos,ValueNeg,Leq,InRange,Geq),
-        TermHead =.. [Term,HeadVar,NewVar],
-        (Leq \= [] -> max_list(Leq, Max),ThrL = leq(NewVar,Max);ThrL=_),
-        (InRange \= [[]] -> inRangeStandardisation(InRange,[],Threshold),(Threshold\=[]->ThrI = inRange(NewVar,Threshold);ThrI=_) ;ThrI=_),
-        (Geq \= [] -> min_list(Geq, Min),ThrG = geq(NewVar,Min);ThrG=_),   
-        make_list(ThrL, ThrI, ThrG, Body),
-        (Body \= [] -> (Head =.. [Term,HeadVar],list_to_disjunction(Body,BD), FunctionsInvention1 = (Head :- TermHead,BD),copy_term(FunctionsInvention1,FunctionsInvention2),append(FunctionsInvention,[Var => FunctionsInvention2],Rest1));Rest1=FunctionsInvention),
+        
+        flatten(ValuePos,FFPos),
+        flatten(ValueNeg,FFNeg),
+      
+        findThresholds(FFPos,FFNeg,PosCluster,NegCluster),
+       
+        length(Var,Len),length(HeadVar,Len),append([Term],HeadVar,T),append(T,[NewVar],T1), TermHead=..T1,
+
+        
+        addSigns(PosCluster,PosSigns),
+        addSigns(NegCluster,NegSigns),
+        Body = inCluster(NewVar,pos(PosSigns),neg(NegSigns)),
+     
+       Head =.. [Term|HeadVar],
+       
+       FunctionsInvention1 = (Head :- TermHead,Body),copy_term(FunctionsInvention1,FunctionsInvention2),
+       write(FunctionsInvention2),nl,
+       append(FunctionsInvention,[Var => FunctionsInvention2],Rest1),
+      
         extractAndProcessGMM(RestPos,Neg,Rest1,Rest).
 %--------------------------Hypothesis--------------------------------
 
@@ -407,12 +472,8 @@ checkCoverage(Clause,InvF,Rel,Pos,Neg,Rule):-
 findRelevantFunctions([],_,[]).
 findRelevantFunctions([H|T],InvF,[Bag|Rest]):-
     H =.. [_|Args],
-    length(Args,Len),
-    (Len = 1 ->
-        nth0(0,Args,A1),
-        findall(C,(nth0(_,InvF,(A=>C)),A==A1),Bag);
-        Bag = []),
-        findRelevantFunctions(T,InvF,Rest).
+    findall(C,(nth0(_,InvF,(A=>C)),A==Args),Bag),
+    findRelevantFunctions(T,InvF,Rest).
 
 get_at_indices([], _, []).
 get_at_indices([I|Is], List, [Elem|Rest]) :-
@@ -424,7 +485,8 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
     %between(1,3,N),  % add max clause here
     %combinations_conjunction(Body,N,B),
     get_at_indices(H,BCs,B),
-   
+    
+
     BCs = [Head|_],
     Head =.. [_|HArgs],
     
@@ -436,9 +498,9 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
 
     findRelevantFunctions(B,InvF,FilteredInvF),
     findRelevantFunctions(B,Relations,FilteredRelF),
+    
     flatten(FilteredInvF,FlatFilteredInvF),
     flatten(FilteredRelF,FlatFilteredRelF),
-    %%write(Clause),write('-->'),write(FlatFilteredInvF),nl,
     assertAll(FlatFilteredInvF),
     assertAll(FlatFilteredRelF),
     checkCoverage(Clause,FlatFilteredInvF,FlatFilteredRelF,Exs,NExs,Rule2),
@@ -453,55 +515,16 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
 hypothesisSpace(Exs,NExs,InvF,Relations,BCs,Rules):-
     length(BCs,Len),
     combinations(Len,3,Comb),
+
     generateRules(BCs,InvF,Exs,NExs,Relations,Comb ,[],Rules).
 
 %------------------Best rule from hypothesis space----------------
 
-%====================================
-% select_best_rule(Rules, BestRule)
-% Selects the best rule from a list of rules based on:
-% 1. Highest positive coverage
-% 2. Lowest negative coverage
-% 3. Lowest complexity
-select_best_rule([Rule], Rule) :- !.
-select_best_rule([Rule|Rules], BestRule) :-
-    select_best_rule(Rules, BestOfRest),
-    compare_rules(Rule, BestOfRest, BestRule).
-
-% compare_rules(Rule1, Rule2, BestRule)
-% Compares two rules and selects the better one based on criteria
-compare_rules(Rule1, Rule2, Rule1) :-
-    rule_metrics(Rule1, Pos1, Neg1, Comp1),
-    rule_metrics(Rule2, Pos2, Neg2, Comp2),
-  
-    ( Pos1 > Pos2;
-      Pos1 = Pos2, Neg1 < Neg2;
-      Pos1 = Pos2, Neg1 = Neg2, Comp1 < Comp2 ), !.
-compare_rules(_, Rule2, Rule2).
-
-% rule_metrics(Rule, PosCount, NegCount, Complexity)
-% Computes metrics for a rule:
-% - PosCount: Number of positive examples
-% - NegCount: Number of negative examples
-% - Complexity: Number of literals in the body (excluding true)
-rule_metrics(rule((_:-Body), Pos, Neg,_,_), PosCount, NegCount, Complexity) :-
-    length(Pos, PosCount),
-    length(Neg, NegCount),
-    body_complexity(Body, Complexity).
-
-% body_complexity(Body, Complexity)
-% Counts the number of literals in the body, excluding 'true'
-body_complexity(true, 0) :- !.
-body_complexity((Literal,Rest), Complexity) :-
-    !, body_complexity(Rest, RestComplexity),
-    ( Literal = true -> Complexity = RestComplexity;
-      Complexity is RestComplexity + 1 ).
-body_complexity(Literal, 1) :-
-    Literal \= true.
-
 %----------------------------------------------------------
+
 assertAll([]).
 assertAll([H|T]):-
+    
     assertz(H),
     assertAll(T).
 
@@ -528,18 +551,15 @@ learnFromFile(BKFile,ExampleFile,BiasFile):-
     maplist(bottomClausePrint,BCs,PBC),
     maplist(bottomClausePrint,BCs1,NBC),
     
+
     analyseNumbers(PBC,NBC,InventedFunctions,Relations,NewBC),
-    
     maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions,Relations),NewBC,Hypos),
     
     flatten(Hypos,FlatHypos),
-   
-    select_best_rule(FlatHypos, H),
-    H = rule((FinalRule),_,_,InvF,Rel),
-    writeln('Final Rule:'),
-    write(FinalRule),write('.'),nl,
-    maplist(writeln,InvF),
-    maplist(writeln,Rel).
+    writeln('------------------------------------------ '),
+    writeln('Hypothesis space generated.'),
+    writeln('Finding best rules...'),
+    findBestRules(FlatHypos,ArrPos).
     %maplist(bottomClausesPrint,FinalRule,FinalRule1),
     %write(FinalRule1).  
 
