@@ -1,0 +1,11 @@
+modeh(eastbound/1,[in]).
+modeb(short/1,[in]).
+modeb(closed/1,[in]).
+modeb(long/1,[in]).
+modeb(open_car/1,[in]).
+modeb(double/1,[in]).
+modeb(jagged/1,[in]).
+modeb(shape/2,[in,const]).
+modeb(load/3,[in,const,const]).
+modeb(wheels/2,[in,const]).
+modeb(has_car/2,[in,out]).
