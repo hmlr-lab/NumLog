@@ -1,5 +1,5 @@
 # Supplementary Material: NumLogV2 Documentation
-
+The is an extended version of NumLog
 **Source Repository:** [https://github.com/hmlr-lab/NumLog](https://github.com/hmlr-lab/NumLog)
 
 ## 1. Overview
