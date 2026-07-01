@@ -19,29 +19,7 @@
 :- dynamic modeh/2, modeb/2.
 :- dynamic pos/1.
 :- dynamic neg/1.
-%---------------------------------------------------------------
-% def gaussian_pdf(x, mean, var):
-%     # Handle very small/zero variance
-%     if var <= 1e-6:
-%         # Fallback: distance-based score (higher when closer)
-%         dist = abs(x - mean)
-%         return 1.0 / (1.0 + dist)
-%     else:
-%         coeff = 1.0 / np.sqrt(2 * np.pi * var)
-%         exponent = np.exp(-((x - mean) ** 2) / (2 * var))
-%         return coeff * exponent
 
-% # -----------------------------
-% # Assign cluster to a value
-% # -----------------------------
-% def assign_cluster(x, clusters):
-%     scores = []
-%     for c in clusters:
-%         score = gaussian_pdf(x, c["mean"], c["variance"])
-%         scores.append((c["id"], c["polarity"], score))
-%     # pick cluster with max score
-%     best = max(scores, key=lambda t: t[2])
-%     return best  # (id, polarity, score)
 %-------------------Operator---------------
 gaussian_pdf(X, (μ(Mean),σ(Var)), Score) :-
     (Var =< 1e-6 ->
@@ -57,9 +35,9 @@ inCluster(X,pos(PosGauss),neg(NegGauss)):-
     number(X),
     maplist(gaussian_pdf(X),PosGauss,PosScors),
     maplist(gaussian_pdf(X),NegGauss,NegScors),
-    max_list(PosScors,MaxPos),
-    max_list(NegScors,MaxNeg),
-    MaxPos > MaxNeg.
+    sum_list(PosScors,PosScore),
+    sum_list(NegScors,NegScore),
+    PosScore > NegScore.
 
 %=====================Find relations=============================
 replace_in_list(_, _, [], []).
@@ -72,7 +50,7 @@ replace_in_list(Old, New, [H|T], [H|T2]) :-
 %%%%%%%%%%%-------------------------MAY NEED TO CHANGE HERE-----------------%%%%%%%%%%%%
 groupGroupedExamples([],List,List).
 groupGroupedExamples([Term-A-Values|T],List,Temp):-
-     ((member(Term1-A1-Values1, List),A1==A) ->
+    ((member(Term1-A1-Values1, List),A1 =@= A) ->
      (
      flatten(Term1,FTerm1),
      append(Values1,[Values],Values2),
@@ -114,9 +92,15 @@ generateRelationTerms([Var=>Terms|T],Rel,Rel2):-
 cppRelations([],Rel,Rel).
 cppRelations([Terms-Var-Values|T],Rel,R):-
     maplist(transpose,Values, Transpose),
-    (length(Transpose, 1)->Transpose = [FF];
-    maplist(flatten,Transpose,FF)),
-    findRelations(Terms,FF,Rel1),
+    (length(Transpose, 1) ->
+        Transpose = [OnlyColumn],
+        flatten(OnlyColumn, FlatValues),
+        ValuesForRelations = [FlatValues]
+    ;
+        maplist(flatten,Transpose,ValuesForRelations)
+    ),
+    (is_list(Terms) -> TermList = Terms ; TermList = [Terms]),
+    findRelations(TermList,ValuesForRelations,Rel1),
     append(Rel,[Var=>Rel1],Rel2),
     cppRelations(T,Rel2,R).
 
@@ -163,8 +147,8 @@ bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
     flatten(Bs, FlatList_Bs),
     flatten(Ps, FlatList_Ps),
 
-    findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),((nth1(N, FlatList_Ps, const),nth1(N,FlatList_Bs,(NB1)),NB=(#NB1));
-                                                         ((nth1(N, FlatList_Ps, out);nth1(N, FlatList_Ps, numeric)),nth1(N,FlatList_Bs,NB))
+    findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),(((nth1(N, FlatList_Ps, const);nth1(N, FlatList_Ps, numeric)),nth1(N,FlatList_Bs,(NB1)),NB=(#NB1));
+                                                         (nth1(N, FlatList_Ps, out),nth1(N,FlatList_Bs,NB))
                                                          )),FlatList),
                                                          
                                                         
@@ -177,14 +161,13 @@ bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
 getTrueVal(L,L2,X,Val):-
     (member(#X,L)->
     Val = X;
-    (number(X)->
-    Val = X;
-    nth0(Index,L,X),nth0(Index,L2,Val))).
+    %(number(X) ->
+    %Val = X;
+    nth0(Index,L,X),nth0(Index,L2,Val)).
 
 
 add_variable([],_,_,List,List).
 add_variable([H|T],List1,List2,List,NewList):-
-    
     H =.. [Cl|Args],
     maplist(getTrueVal(List1,List2),Args,Vars),
     NewH =..[Cl|Vars],
@@ -302,13 +285,37 @@ head_connectedness(Args,Body):-
 
    
 %---------------------------------------------------------
+select_in_args([], [], []).
+select_in_args([in|Modes], [Arg|Args], [Arg|Selected]) :-
+    select_in_args(Modes, Args, Selected).
+select_in_args([_|Modes], [_|Args], Selected) :-
+    select_in_args(Modes, Args, Selected).
+
+take_modes(0, _, []) :- !.
+take_modes(N, [M|Ms], [M|Out]) :-
+    N > 0,
+    N1 is N - 1,
+    take_modes(N1, Ms, Out).
+take_modes(N, [], [numeric|Out]) :-
+    N > 0,
+    N1 is N - 1,
+    take_modes(N1, [], Out).
+
+normalize_modes(Arity, ModesRaw, ModesNorm) :-
+    take_modes(Arity, ModesRaw, ModesNorm).
+
+modes_for_term(Term, Arity, ModesNorm) :-
+    modeb(Term/_, ModesRaw),
+    normalize_modes(Arity, ModesRaw, ModesNorm).
+
 refinementBottomClauses([],_,_,NewBC,NewBC).
 refinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
     (member(H, Filtered)->
     (
     H =.. [Term|Vars],
-    modeb(Term/_,Modes),
-    findall(Var,(nth0(Index,Modes,in),nth0(Index,Vars,Var)),Bag),
+    length(Vars, VarArity),
+    modes_for_term(Term, VarArity, Modes),
+    select_in_args(Modes, Vars, Bag),
     H1 =..[Term|Bag],
     append(NewBC,[H1],NewBC_1),
     Rel =..[relations|Bag],
@@ -322,40 +329,37 @@ groupRefinementBottomClauses([],_,_,NewBC,NewBC).
 groupRefinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
     refinementBottomClauses(H,Filtered,HasRel,[],NewBC1),
     append(NewBC,[NewBC1],NewBC2),
-    groupRefinementBottomClauses(T,HasRel,Filtered,NewBC2,Temp).
+    groupRefinementBottomClauses(T,Filtered,HasRel,NewBC2,Temp).
 
 % Analysis of numerical values
 cluster_vars_by_numbers(Terms, Grouped,Filtered) :-
-    include(only_numbers, Terms, Filtered),     % Keep only a(_, Number) where Number is numeric
-    collect_pairs(Filtered, Pairs),             % Convert to [Var-Value, ...]
+    only_numbers(Terms,[],[], Filtered,Pairs),     % Keep only a(_, Number) where Number is numeric
     sort(0, @=<, Pairs, Ps),
     group_pairs_by_key(Ps, Grouped).
 
-checkIfNumber(Values,Index):-
-    nth0(Index, Values, Value),
-    number(Value).
-
+getVarFromIndex(Values,Index,Var):-
+    nth0(Index, Values, Var).
 % Keep only terms with numeric values
-only_numbers(T) :-
-    T =.. [T1|Values],
-    modeb(T1/_,Modes),
-    findall(Nums,nth0(Nums,Modes,numeric),Bag),
-    length(Bag,Len),
-    (Len > 0 ->
-    maplist(checkIfNumber(Values),Bag);fail).
-    
-% Turn a(Var, Val) into Var-Val
-% collect_pairs([], []).
-% collect_pairs([H|T], [Term - Var - Val|Rest]) :-
-%     H =.. [Term, Var, Val],  % Extract Var and Val
-%     collect_pairs(T, Rest).
-notNumber(X) :- \+ number(X).
-collect_pairs([], []).
-collect_pairs([H|T], [Term - NNs - Ns|Rest]) :-
-    H =.. [Term| Var],  % Extract Var and Val
-    include(number, Var, Ns),     % Ensure Val is numeric
-    include(notNumber, Var, NNs), % Ensure Val is numeric
-    collect_pairs(T, Rest).
+only_numbers([],  Filters, Pairs, Filters, Pairs).
+only_numbers([H|T], Filters, Pairs, Filters2, Pairs2) :-
+    H =.. [T1|Values],
+    length(Values, ValueArity),
+    (modes_for_term(T1, ValueArity, Modes),
+    findall(Nums,nth0(Nums,Modes,numeric),Indexes),
+    length(Indexes,Len),
+    Len > 0 ->
+    (
+    findall(Nums,(nth0(Nums,Modes,in);nth0(Nums,Modes,out);nth0(Nums,Modes,const)),Indexes1),
+    maplist(getVarFromIndex(Values),Indexes1,NNsRaw),
+    copy_term(NNsRaw, NNs),
+    numbervars(NNs, 0, _),
+    maplist(getVarFromIndex(Values),Indexes,Ns),
+    append(Pairs,[T1 - NNs - Ns],Pairs1),
+    append(Filters,[H],Filters1));
+    (Pairs1=Pairs,
+    Filters1=Filters)),
+    only_numbers(T,Filters1,Pairs1,Filters2,Pairs2).
+
 
 bottomClausePrint1(Term,Copy) :-
     copy_term(Term, Copy),
@@ -371,6 +375,7 @@ analyseNumbers(Pos,Neg,F,Relations,NewBC):-
         flatten(Neg,FlatNeg),
         cluster_vars_by_numbers(FlatPos,GroupedPos,Filtered),
         cluster_vars_by_numbers(FlatNeg,GroupedNeg,_),
+       
         cppRelations(GroupedPos,Relations),
         (length(Relations,LenR),LenR > 0 ->HasRel=true;HasRel=fail),
         groupRefinementBottomClauses(Pos,Filtered,HasRel,[],NewBC),
@@ -381,38 +386,78 @@ addSigns([H|T],[Sign|Rest]):-
     H = [Mean, StdDev],
     Sign = (μ(Mean),σ(StdDev)),
     addSigns(T,Rest).
+
+% Build a call to the original background predicate while selecting
+% all numeric arguments as clustering variables.
+build_projection_call(Term, FixedVars, Call, NumericVars) :-
+    modeb(Term/ModeArity, ModesRaw),
+    findall(A, (current_predicate(Term/A), A > 1), Arities),
+    (Arities == [] -> Arity = ModeArity ; max_list(Arities, Arity)),
+    normalize_modes(Arity, ModesRaw, Modes),
+    length(Args, Arity),
+    fill_fixed_args(Modes, Args, FixedVars),
+    select_numeric_args(Modes, Args, NumericVars),
+    Call =.. [Term|Args].
+
+select_numeric_args([], [], []).
+select_numeric_args([numeric|Modes], [Arg|Args], [Arg|Selected]) :-
+    select_numeric_args(Modes, Args, Selected).
+select_numeric_args([_|Modes], [_|Args], Selected) :-
+    select_numeric_args(Modes, Args, Selected).
+
+fill_fixed_args([], [], []).
+fill_fixed_args([Mode|Modes], [Arg|Args], FixedVars) :-
+    ( (Mode == in ; Mode == out ; Mode == const) ->
+        FixedVars = [Arg|RestFixed]
+    ;
+        RestFixed = FixedVars
+    ),
+    fill_fixed_args(Modes, Args, RestFixed).
         
 
 list_to_disjunction([X], X) :- !.
 list_to_disjunction([H|T], (H ; Rest)) :-
             list_to_disjunction(T, Rest).
+
+build_gmm_goals([], [], [], []).
+build_gmm_goals([Var|Vars], [PosCol|PosCols], [NegCol|NegCols], [Goal|Goals]) :-
+    ( PosCol == [] ; NegCol == [] ->
+        Goal = true
+    ;
+        findThresholds(PosCol,NegCol,PosCluster,NegCluster),
+        addSigns(PosCluster,PosSigns),
+        addSigns(NegCluster,NegSigns),
+        Goal = inCluster(Var,pos(PosSigns),neg(NegSigns))
+    ),
+    build_gmm_goals(Vars, PosCols, NegCols, Goals).
     
 extractAndProcessGMM([],_,FunctionsInvention,FunctionsInvention).    
 extractAndProcessGMM([Term-Var-ValuePos|RestPos],Neg,FunctionsInvention,Rest):-
-        ((nth0(Index, Neg, Term-VarNeg-_),Var==VarNeg)->
+    ((nth0(Index, Neg, Term-VarNeg-_),Var =@= VarNeg)->
         nth0(Index, Neg, _-_-N1),
         ValueNeg=N1;
         ValueNeg=[]),
-        
-        flatten(ValuePos,FFPos),
-        flatten(ValueNeg,FFNeg),
-      
-        findThresholds(FFPos,FFNeg,PosCluster,NegCluster),
-       
-        length(Var,Len),length(HeadVar,Len),append([Term],HeadVar,T),append(T,[NewVar],T1), TermHead=..T1,
 
-        
-        addSigns(PosCluster,PosSigns),
-        addSigns(NegCluster,NegSigns),
-        Body = inCluster(NewVar,pos(PosSigns),neg(NegSigns)),
-     
-       Head =.. [Term|HeadVar],
-       
+        restore_vars(Var, VarRestored),
+        build_projection_call(Term, VarRestored, TermHead, NumericVars),
+        Head =.. [Term|VarRestored],
+
+        transpose(ValuePos, PosCols),
+        (ValueNeg == [] ->
+            length(PosCols, ColLen),
+            length(NegCols, ColLen),
+            maplist(=([]), NegCols)
+        ;
+            transpose(ValueNeg, NegCols)
+        ),
+        build_gmm_goals(NumericVars, PosCols, NegCols, Goals),
+        list_to_conj(Goals, Body),
+
        FunctionsInvention1 = (Head :- TermHead,Body),copy_term(FunctionsInvention1,FunctionsInvention2),
 
-       append(FunctionsInvention,[Var => FunctionsInvention2],Rest1),
+    append(FunctionsInvention,[VarRestored => FunctionsInvention2],Rest1),
       
-        extractAndProcessGMM(RestPos,Neg,Rest1,Rest).
+       extractAndProcessGMM(RestPos,Neg,Rest1,Rest).
 %--------------------------Hypothesis--------------------------------
 
 entailExamples([],List,List).
@@ -431,6 +476,11 @@ entailExamples([F|NEx],Temp,List):-
 restore_vars(Clause, Restored) :-
     empty_assoc(VarMap),
     restore_term(Clause, Restored, VarMap, _).
+
+% Keep normal Prolog variables as variables.
+restore_term(Term, Term, Map, Map) :-
+    var(Term),
+    !.
 
 % Base case: constant or atom
 restore_term(Term, Term, Map, Map) :-
@@ -463,7 +513,6 @@ checkCoverage(Clause,InvF,Rel,Pos,Neg,Rule):-
     restore_vars(Clause, NewClause),
     %copy_term(NewClause, NewClause1),
     assertz(NewClause),
-   
     entailExamples(Pos,[],PosList),
     entailExamples(Neg,[],NegList),
     retract(NewClause),
@@ -472,7 +521,7 @@ checkCoverage(Clause,InvF,Rel,Pos,Neg,Rule):-
 findRelevantFunctions([],_,[]).
 findRelevantFunctions([H|T],InvF,[Bag|Rest]):-
     H =.. [_|Args],
-    findall(C,(nth0(_,InvF,(A=>C)),A==Args),Bag),
+    findall(C,(member(A=>C,InvF),A =@= Args),Bag),
     findRelevantFunctions(T,InvF,Rest).
 
 get_at_indices([], _, []).
@@ -485,14 +534,10 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
     %between(1,3,N),  % add max clause here
     %combinations_conjunction(Body,N,B),
     get_at_indices(H,BCs,B),
-    
-
     BCs = [Head|_],
     Head =.. [_|HArgs],
-    
     (head_connectedness(HArgs,B)-> %head_connectedness
     (
-  
     list_to_conj(B, Conj),
     Clause = (Head:-Conj),
 
@@ -511,17 +556,12 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
     Rule3=Rule),
     generateRules(BCs,InvF,Exs,NExs,Relations,T,Rule3,Rule1).
 
-
-
-    hypothesisSpace(Exs,NExs,InvF,Relations,BCs,Rules):-
-    length(BCs,Len),
-    combinations(Len,3,Comb),
-
-    generateRules(BCs,InvF,Exs,NExs,Relations,Comb ,[],Rules).
+hypothesisSpace(Exs,NExs,InvF,Relations,BCs,Rules):-
+        length(BCs,Len),
+        combinations(Len,4,Comb),
+        generateRules(BCs,InvF,Exs,NExs,Relations,Comb ,[],Rules).
 
 %------------------Best rule from hypothesis space----------------
-
-%----------------------------------------------------------
 
 assertAll([]).
 assertAll([H|T]):-
@@ -549,18 +589,17 @@ learnFromFile(BKFile,ExampleFile,BiasFile):-
 
     generateBottomClause(ArrPos,[],BCs),
     generateBottomClause(ArrNeg,[],BCs1),
-    maplist(bottomClausePrint,BCs,PBC),
-    maplist(bottomClausePrint,BCs1,NBC),
     
+    analyseNumbers(BCs,BCs1,InventedFunctions,Relations,NewBC),
 
-    analyseNumbers(PBC,NBC,InventedFunctions,Relations,NewBC),
+    write('Bottom cluases has been generated.'),nl,
     maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions,Relations),NewBC,Hypos),
-    write(ArrPos),nl,
+   
     flatten(Hypos,FlatHypos),
     writeln('------------------------------------------ '),
     writeln('Hypothesis space generated.'),
     writeln('Finding best rules...'),
-    findBestRules(FlatHypos,ArrPos).
+    findBestRules(FlatHypos,ArrPos,0.45).
     %maplist(bottomClausesPrint,FinalRule,FinalRule1),
     %write(FinalRule1).  
 

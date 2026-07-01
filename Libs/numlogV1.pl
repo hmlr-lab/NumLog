@@ -1,7 +1,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%% Numlog: numerical learning and reasoning using ILP %%%%%%%%%%%%%%%%%%%%%%%%
 %                                           Version: 2                                                  %
 %                                    Main Author: Daniel Cyrus                                          %
-%                            Learning numerical data using ILP and GMM                                  % 
+%                            Learning numerical data using ILP and Range discovery                      % 
 %                                            The HMLR lab                                               %
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 :- module(numlogV1, [learnFromFile/3]).
@@ -40,12 +40,12 @@ replace_in_list(Old, New, [Old|T], [New|T2]) :-
     replace_in_list(Old, New, T, T2).
 
 replace_in_list(Old, New, [H|T], [H|T2]) :-
-    H \= Old,
+    \+ H == Old,
     replace_in_list(Old, New, T, T2).
 
 groupGroupedExamples([],List,List).
 groupGroupedExamples([Term-A-Values|T],List,Temp):-
-     ((member(Term1-A1-Values1, List),A1==A) ->
+    ((member(Term1-A1-Values1, List),A1 =@= A) ->
      (
      flatten(Term1,FTerm1),
      append(Values1,[Values],Values2),
@@ -56,7 +56,9 @@ groupGroupedExamples([Term-A-Values|T],List,Temp):-
 
 relations([],Rel,Rel).
 relations([Terms-Var-Values|T],Rel,R):-
-    findRelations(Terms,Values,Rel1),
+    (is_list(Terms) -> TermList = Terms ; TermList = [Terms]),
+    (Values = [First|_], is_list(First) -> ValuesForRelations = Values ; ValuesForRelations = [Values]),
+    findRelations(TermList,ValuesForRelations,Rel1),
     append(Rel,[Var=>Rel1],Rel2),
     relations(T,Rel2,R).
 
@@ -102,8 +104,14 @@ combination([_|T], Comb) :-
 
 member_in_list([], _, _) :- fail.
 member_in_list([H|_], List2,Parameters) :- nth0(Index, List2, H),nth0(Index, Parameters, in), !.
-%member(H, List2), !.
 member_in_list([_|T], List2,Parameters) :- member_in_list(T, List2,Parameters).
+
+is_numeric_list([]).
+is_numeric_list([H|T]) :-
+    number(H), is_numeric_list(T).
+
+unwrap_numeric(#X, X) :- !.
+unwrap_numeric(X, X).
 
 getPredicate2(Ar,Bag):-
     findall(G=>Args=>Par, (modeb(L/A,Par),length(Args,A),G =..[L|Args],call(G),member_in_list(Ar, Args,Par)), Bag).
@@ -129,8 +137,9 @@ bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
     flatten(Bs, FlatList_Bs),
     flatten(Ps, FlatList_Ps),
 
-    findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),((nth1(N, FlatList_Ps, const),nth1(N,FlatList_Bs,(NB1)),NB=(#NB1));
-                                                         ((nth1(N, FlatList_Ps, out);nth1(N, FlatList_Ps, number)),nth1(N,FlatList_Bs,NB))
+    
+    findall(NB, (length(FlatList_Bs,Lb),between(1,Lb,N),(((nth1(N, FlatList_Ps, const);nth1(N, FlatList_Ps, numeric)),nth1(N,FlatList_Bs,(NB1)),NB=(#NB1));
+                                                         (nth1(N, FlatList_Ps, out),nth1(N,FlatList_Bs,NB))
                                                          )),FlatList),
                                                          
                                                         
@@ -143,9 +152,9 @@ bottomClause(Arity,Predicates,Arities,Predicates1,Arities1):-
 getTrueVal(L,L2,X,Val):-
     (member(#X,L)->
     Val = X;
-    (number(X)->
-    Val = X;
-    nth0(Index,L,X),nth0(Index,L2,Val))).
+    %(number(X)->
+    %Val = X;
+    nth0(Index,L,X),nth0(Index,L2,Val)).
 
 
 add_variable([],_,_,List,List).
@@ -247,42 +256,63 @@ head_connectedness(Args,Body):-
    
 
 %---------------------------------------------------------
+select_in_args([], [], []).
+select_in_args([in|Modes], [Arg|Args], [Arg|Selected]) :-
+    select_in_args(Modes, Args, Selected).
+select_in_args([_|Modes], [_|Args], Selected) :-
+    select_in_args(Modes, Args, Selected).
+
 refinementBottomClauses([],_,_,NewBC,NewBC).
-refinementBottomClauses([H|T],HasRel,Filtered,NewBC,Temp):-
+refinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
     (member(H, Filtered)->
-    (H =.. [Cl,Var|_],
-    H1 =..[Cl,Var],
+    (H =.. [Cl|Vars],
+    modeb(Cl/_, Modes),
+    select_in_args(Modes, Vars, InArgs),
+    H1 =..[Cl|InArgs],
     append(NewBC,[H1],NewBC_1),
 
-    Rel =..[relations,Var],
+    Rel =..[relations|InArgs],
     ((HasRel,not(member(Rel,NewBC))) -> append(NewBC_1,[Rel],NewBC1);NewBC1= NewBC_1)
     );
     append(NewBC, [H], NewBC1)),    
-    refinementBottomClauses(T,HasRel,Filtered,NewBC1,Temp).
+    refinementBottomClauses(T,Filtered,HasRel,NewBC1,Temp).
 
 groupRefinementBottomClauses([],_,_,NewBC,NewBC).
 groupRefinementBottomClauses([H|T],Filtered,HasRel,NewBC,Temp):-
     refinementBottomClauses(H,Filtered,HasRel,[],NewBC1),
     append(NewBC,[NewBC1],NewBC2),
-    groupRefinementBottomClauses(T,HasRel,Filtered,NewBC2,Temp).
+    groupRefinementBottomClauses(T,Filtered,HasRel,NewBC2,Temp).
 
 % Main predicate
+
+% Analysis of numerical values
 cluster_vars_by_numbers(Terms, Grouped,Filtered) :-
-    include(only_numbers, Terms, Filtered),     % Keep only a(_, Number) where Number is numeric
-    collect_pairs(Filtered, Pairs),             % Convert to [Var-Value, ...]
+    only_numbers(Terms,[],[], Filtered,Pairs),     % Keep only a(_, Number) where Number is numeric
     sort(0, @=<, Pairs, Ps),
     group_pairs_by_key(Ps, Grouped).
 
-checkIfNumber(Values,Index):-
-    nth0(Index, Values, Value),
-    number(Value).
-
+getVarFromIndex(Values,Index,Var):-
+    nth0(Index, Values, Var).
 % Keep only terms with numeric values
-only_numbers(T) :-
-    T =.. [T1|Values],
-    modeb(T1/_,Modes),
-    findall(Nums,nth0(Nums,Modes,number),Bag),
-    maplist(checkIfNumber(Values),Bag).
+only_numbers([],  Filters, Pairs, Filters, Pairs).
+only_numbers([H|T], Filters, Pairs, Filters2, Pairs2) :-
+    H =.. [T1|Values],
+    (modeb(T1/_,Modes),
+    findall(Nums,nth0(Nums,Modes,numeric),Indexes),
+    length(Indexes,Len),
+    Len > 0,
+    findall(V, (member(Idx, Indexes), nth0(Idx, Values, RawV), unwrap_numeric(RawV, V)), Ns),
+    is_numeric_list(Ns) ->
+    (
+    findall(Nums,(nth0(Nums,Modes,in);nth0(Nums,Modes,out);nth0(Nums,Modes,const)),Indexes1),
+    maplist(getVarFromIndex(Values),Indexes1,NNsRaw),
+    copy_term(NNsRaw, NNs),
+    numbervars(NNs, 0, _),
+    append(Pairs,[T1 - NNs - Ns],Pairs1),
+    append(Filters,[H],Filters1));
+    (Pairs1=Pairs,
+    Filters1=Filters)),
+    only_numbers(T,Filters1,Pairs1,Filters2,Pairs2).
 % Turn a(Var, Val) into Var-Val
 collect_pairs([], []).
 collect_pairs([H|T], [Term - Var - Val|Rest]) :-
@@ -303,6 +333,7 @@ analyseNumbers(Pos,Neg,F,Relations,NewBC):-
         flatten(Neg,FlatNeg),
         cluster_vars_by_numbers(FlatPos,GroupedPos,Filtered),
         cluster_vars_by_numbers(FlatNeg,GroupedNeg,_),
+        
         relations(GroupedPos,Relations),
         (length(Relations,LenR),LenR > 0 ->HasRel=true;HasRel=fail),
         groupRefinementBottomClauses(Pos,Filtered,HasRel,[],NewBC),
@@ -310,7 +341,7 @@ analyseNumbers(Pos,Neg,F,Relations,NewBC):-
          %==========relations should be somewhere here.
         
         
-        extractAndProcessGMM(GroupedPos,GroupedNeg,[],F).
+        extractAndProcessRanges(GroupedPos,GroupedNeg,[],F).
 
 
 
@@ -333,21 +364,46 @@ analyseNumbers(Pos,Neg,F,Relations,NewBC):-
 list_to_disjunction([X], X) :- !.
 list_to_disjunction([H|T], (H ; Rest)) :-
             list_to_disjunction(T, Rest).
+
+build_projection_call(Term, FixedVars, Call, NumericVar) :-
+    modeb(Term/Arity, Modes),
+    length(Modes, Arity),
+    length(Args, Arity),
+    fill_fixed_args(Modes, Args, FixedVars),
+    nth0(NumericIndex, Modes, numeric),
+    nth0(NumericIndex, Args, NumericVar),
+    Call =.. [Term|Args].
+
+fill_fixed_args([], [], []).
+fill_fixed_args([Mode|Modes], [Arg|Args], FixedVars) :-
+    ( (Mode == in ; Mode == out ; Mode == const) ->
+        FixedVars = [Arg|RestFixed]
+    ;
+        RestFixed = FixedVars
+    ),
+    fill_fixed_args(Modes, Args, RestFixed).
     
-extractAndProcessGMM([],_,FunctionsInvention,FunctionsInvention).    
-extractAndProcessGMM([Term-Var-ValuePos|RestPos],Neg,FunctionsInvention,Rest):-
-        ((nth0(Index, Neg, Term-VarNeg-_),Var==VarNeg)->
+extractAndProcessRanges([],_,FunctionsInvention,FunctionsInvention).    
+extractAndProcessRanges([Term-Var-ValuePos|RestPos],Neg,FunctionsInvention,Rest):-
+        ((nth0(Index, Neg, Term-VarNeg-_),Var =@= VarNeg)->
         nth0(Index, Neg, _-_-N1),
         ValueNeg=N1;
         ValueNeg=[]),
-        findThresholds(ValuePos,ValueNeg,Leq,InRange,Geq),
-        TermHead =.. [Term,HeadVar,NewVar],
-        (Leq \= [] -> max_list(Leq, Max),ThrL = leq(NewVar,Max);ThrL=_),
-        (InRange \= [[]] -> inRangeStandardisation(InRange,[],Threshold),(Threshold\=[]->ThrI = inRange(NewVar,Threshold);ThrI=_) ;ThrI=_),
-        (Geq \= [] -> min_list(Geq, Min),ThrG = geq(NewVar,Min);ThrG=_),   
-        make_list(ThrL, ThrI, ThrG, Body),
-        (Body \= [] -> (Head =.. [Term,HeadVar],list_to_disjunction(Body,BD), FunctionsInvention1 = (Head :- TermHead,BD),copy_term(FunctionsInvention1,FunctionsInvention2),append(FunctionsInvention,[Var => FunctionsInvention2],Rest1));Rest1=FunctionsInvention),
-        extractAndProcessGMM(RestPos,Neg,Rest1,Rest).
+        flatten(ValuePos,FFPos),
+        flatten(ValueNeg,FFNeg),
+        (FFPos \= [], FFNeg \= [] ->
+            findThresholds(FFPos,FFNeg,Leq,InRange,Geq),
+            restore_vars(Var, VarRestored),
+            build_projection_call(Term, VarRestored, TermHead, NewVar),
+            (Leq \= [] -> max_list(Leq, Max),ThrL = leq(NewVar,Max);ThrL=_),
+            (InRange \= [[]] -> inRangeStandardisation(InRange,[],Threshold),(Threshold\=[]->ThrI = inRange(NewVar,Threshold);ThrI=_) ;ThrI=_),
+            (Geq \= [] -> min_list(Geq, Min),ThrG = geq(NewVar,Min);ThrG=_),   
+            make_list(ThrL, ThrI, ThrG, Body),
+            (Body \= [] -> (Head =.. [Term|VarRestored],list_to_disjunction(Body,BD), FunctionsInvention1 = (Head :- TermHead,BD),copy_term(FunctionsInvention1,FunctionsInvention2),append(FunctionsInvention,[VarRestored => FunctionsInvention2],Rest1));Rest1=FunctionsInvention)
+        ;
+            Rest1 = FunctionsInvention
+        ),
+        extractAndProcessRanges(RestPos,Neg,Rest1,Rest).
 %--------------------------Hypothesis--------------------------------
 
 entailExamples([],List,List).
@@ -366,6 +422,10 @@ entailExamples([F|NEx],Temp,List):-
 restore_vars(Clause, Restored) :-
     empty_assoc(VarMap),
     restore_term(Clause, Restored, VarMap, _).
+
+restore_term(Term, Term, Map, Map) :-
+    var(Term),
+    !.
 
 % Base case: constant or atom
 restore_term(Term, Term, Map, Map) :-
@@ -405,14 +465,10 @@ checkCoverage(Clause,InvF,Rel,Pos,Neg,Rule):-
     Rule = rule(Clause, PosList, NegList,InvF,Rel).
 
 findRelevantFunctions([],_,[]).
-findRelevantFunctions([H|T],InvF,[Bag|Rest]):-
+findRelevantFunctions([H|T],InvF,[Bag|Rest]) :-
     H =.. [_|Args],
-    length(Args,Len),
-    (Len = 1 ->
-        nth0(0,Args,A1),
-        findall(C,(nth0(_,InvF,(A=>C)),A==A1),Bag);
-        Bag = []),
-        findRelevantFunctions(T,InvF,Rest).
+    findall(C, (member(A=>C, InvF), A =@= Args), Bag),
+    findRelevantFunctions(T, InvF, Rest).
 
 get_at_indices([], _, []).
 get_at_indices([I|Is], List, [Elem|Rest]) :-
@@ -436,9 +492,11 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
 
     findRelevantFunctions(B,InvF,FilteredInvF),
     findRelevantFunctions(B,Relations,FilteredRelF),
-    flatten(FilteredInvF,FlatFilteredInvF),
-    flatten(FilteredRelF,FlatFilteredRelF),
-    %%write(Clause),write('-->'),write(FlatFilteredInvF),nl,
+    flatten(FilteredInvF,FlatInvF),
+    flatten(FilteredRelF,FlatRel),
+    maplist(restore_vars, FlatInvF, FlatFilteredInvF),
+    maplist(restore_vars, FlatRel, FlatFilteredRelF),
+
     assertAll(FlatFilteredInvF),
     assertAll(FlatFilteredRelF),
     checkCoverage(Clause,FlatFilteredInvF,FlatFilteredRelF,Exs,NExs,Rule2),
@@ -452,7 +510,7 @@ generateRules(BCs,InvF,Exs,NExs,Relations,[H|T],Rule,Rule1):-
 
 hypothesisSpace(Exs,NExs,InvF,Relations,BCs,Rules):-
     length(BCs,Len),
-    combinations(Len,3,Comb),
+    combinations(Len,4,Comb),
     generateRules(BCs,InvF,Exs,NExs,Relations,Comb ,[],Rules).
 
 %------------------Best rule from hypothesis space----------------
@@ -525,13 +583,10 @@ learnFromFile(BKFile,ExampleFile,BiasFile):-
 
     generateBottomClause(ArrPos,[],BCs),
     generateBottomClause(ArrNeg,[],BCs1),
-    maplist(bottomClausePrint,BCs,PBC),
-    maplist(bottomClausePrint,BCs1,NBC),
-    
-    analyseNumbers(PBC,NBC,InventedFunctions,Relations,NewBC),
-    
+    analyseNumbers(BCs,BCs1,InventedFunctions,Relations,NewBC),
+
     maplist(hypothesisSpace(ArrPos,ArrNeg,InventedFunctions,Relations),NewBC,Hypos),
-    
+    write(Hypos),nl,
     flatten(Hypos,FlatHypos),
    
     select_best_rule(FlatHypos, H),
@@ -542,5 +597,3 @@ learnFromFile(BKFile,ExampleFile,BiasFile):-
     maplist(writeln,Rel).
     %maplist(bottomClausesPrint,FinalRule,FinalRule1),
     %write(FinalRule1).  
-
-
