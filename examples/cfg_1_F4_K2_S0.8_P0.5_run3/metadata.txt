@@ -1,0 +1,8 @@
+generator: class_conditional_gmm
+num_features: 4
+n_samples: 1000
+pos_prior: 0.5
+n_components: 2
+cov_scale: 0.8
+test_shift: 0.0
+seed: 33
