@@ -21,14 +21,14 @@
 :- dynamic neg/1.
 
 %-------------------Operator---------------
-gaussian_pdf(X, (μ(Mean),σ(Var)), Score) :-
-    (Var =< 1e-6 ->
+gaussian_pdf(X, component(μ(Mean),σ(StdDev),Weight), Score) :-
+    (StdDev =< 1e-6 ->
         Dist is abs(X - Mean),
-        Score is 1.0 / (1.0 + Dist)
+        Score is Weight / (1.0 + Dist)
     ;
-        Coeff is 1.0 / sqrt(2 * pi * Var),
-        Exponent is exp(-((X - Mean) ** 2) / (2 * Var)),
-        Score is Coeff * Exponent
+        Coeff is 1.0 / (sqrt(2 * pi) * StdDev),
+        Exponent is exp(-((X - Mean) ** 2) / (2 * StdDev * StdDev)),
+        Score is Weight * Coeff * Exponent
     ).
 
 inCluster(X,pos(PosGauss),neg(NegGauss)):-
@@ -383,12 +383,12 @@ analyseNumbers(Pos,Neg,F,Relations,NewBC):-
 
 addSigns([],[]).
 addSigns([H|T],[Sign|Rest]):-
-    H = [Mean, StdDev],
-    Sign = (μ(Mean),σ(StdDev)),
+    H = [Mean, StdDev, Weight],
+    Sign = component(μ(Mean),σ(StdDev),Weight),
     addSigns(T,Rest).
 
 % Build a call to the original background predicate while selecting
-% all numeric arguments as clustering variables.
+% all numeric arguments as GMM variables.
 build_projection_call(Term, FixedVars, Call, NumericVars) :-
     modeb(Term/ModeArity, ModesRaw),
     findall(A, (current_predicate(Term/A), A > 1), Arities),
@@ -602,5 +602,3 @@ learnFromFile(BKFile,ExampleFile,BiasFile):-
     findBestRules(FlatHypos,ArrPos,0.45).
     %maplist(bottomClausesPrint,FinalRule,FinalRule1),
     %write(FinalRule1).  
-
-

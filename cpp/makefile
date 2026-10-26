@@ -11,9 +11,10 @@ LDFLAGS = -std=c++17 $(shell pkg-config --libs swipl) -shared
 SRC = $(wildcard src/*.cpp)
 OBJ = $(SRC:.cpp=.o)
 LIBRARY = build/libnumlog.so  # Shared library target
+LIBRARY_V2 = ../Libs/libnumlogV2.so
 
 # Default Target
-all: $(LIBRARY)
+all: $(LIBRARY) $(LIBRARY_V2)
 
 # Ensure build directory exists
 build/:
@@ -21,6 +22,10 @@ build/:
 
 # Build the shared library
 $(LIBRARY): $(OBJ) | build/
+	$(LD) $(OBJ) -o $@ $(LDFLAGS)
+
+# Build the foreign library loaded by Libs/numlogV2.pl
+$(LIBRARY_V2): $(OBJ) | build/
 	$(LD) $(OBJ) -o $@ $(LDFLAGS)
 
 # Compile .cpp files to .o with -fPIC

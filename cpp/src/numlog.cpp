@@ -7,8 +7,10 @@
 #include <string>
 #include <map>
 #include <set>
+#include <numeric>
 #include <unordered_set>
-#
+#include <fstream>
+
 
 using namespace std;
 
@@ -20,18 +22,6 @@ double calculateMean(const vector<double>& data) {
         sum += val;
     }
     return sum / data.size();
-}
-
-// Calculate standard deviation of a vector
-double calculateStdDev(const vector<double>& data, double mean, double default_stddev) {
-    if (data.empty()) return default_stddev;
-    double variance = 0.0;
-    for (double value : data) {
-        variance += (value - mean) * (value - mean);
-    }
-    variance /= max(1.0, static_cast<double>(data.size()));
-    double stddev = sqrt(variance);
-    return max(stddev, default_stddev); // Ensure reasonable stddev
 }
 
 // Gaussian PDF
@@ -90,107 +80,122 @@ vector<double> findGaussianIntersections(double mean1, double stddev1, double me
     return intersections;
 }
 
-// Simple k-means clustering for initializing GMM components
-vector<vector<double>> clusterData(const vector<double>& data, int k, double min_stddev) {
-    if (data.empty() || k <= 0) return {};
+// Fit a one-dimensional Gaussian mixture directly from the supplied samples.
+vector<vector<double>> fitGaussianMixture(const vector<double>& data, int components) {
+    if (data.empty() || components <= 0) return {};
+
     vector<double> sorted_data = data;
     sort(sorted_data.begin(), sorted_data.end());
-    vector<vector<double>> clusters(k);
 
-    // Initialize centroids
-    vector<double> centroids(k);
-    for (int i = 0; i < k; ++i) {
-        centroids[i] = sorted_data[i * (sorted_data.size() - 1) / max(1, k - 1)];
+    double data_mean = calculateMean(data);
+    double data_variance = 0.0;
+    for (double value : data) {
+        data_variance += (value - data_mean) * (value - data_mean);
+    }
+    data_variance /= data.size();
+
+    double data_range = sorted_data.back() - sorted_data.front();
+    double min_stddev = max({1e-9, data_range * 1e-6, abs(data_mean) * 1e-12});
+    double min_variance = min_stddev * min_stddev;
+
+    vector<double> means(components);
+    vector<double> variances(components, max(data_variance, min_variance));
+    vector<double> weights(components, 1.0 / components);
+    for (int i = 0; i < components; ++i) {
+        size_t index = static_cast<size_t>(i) * (sorted_data.size() - 1) /
+                       max(1, components - 1);
+        means[i] = sorted_data[index];
     }
 
-    // Assign points to nearest centroid
-    for (double x : sorted_data) {
-        int closest = 0;
-        double min_dist = abs(x - centroids[0]);
-        for (int i = 1; i < k; ++i) {
-            double dist = abs(x - centroids[i]);
-            if (dist < min_dist) {
-                min_dist = dist;
-                closest = i;
+    const int max_iterations = 100;
+    for (int iteration = 0; iteration < max_iterations; ++iteration) {
+        vector<double> effective_counts(components, 0.0);
+        vector<double> weighted_sums(components, 0.0);
+        vector<double> responsibilities(components);
+
+        for (double value : data) {
+            double max_log_probability = -numeric_limits<double>::infinity();
+            for (int i = 0; i < components; ++i) {
+                double difference = value - means[i];
+                responsibilities[i] = log(max(weights[i], 1e-15)) -
+                    0.5 * log(2.0 * M_PI * variances[i]) -
+                    difference * difference / (2.0 * variances[i]);
+                max_log_probability = max(max_log_probability, responsibilities[i]);
+            }
+
+            double probability_sum = 0.0;
+            for (double& responsibility : responsibilities) {
+                responsibility = exp(responsibility - max_log_probability);
+                probability_sum += responsibility;
+            }
+            for (int i = 0; i < components; ++i) {
+                double responsibility = responsibilities[i] / probability_sum;
+                effective_counts[i] += responsibility;
+                weighted_sums[i] += responsibility * value;
             }
         }
-        clusters[closest].push_back(x);
-    }
 
-    // Ensure non-empty clusters
-    vector<vector<double>> valid_clusters;
-    for (auto& c : clusters) {
-        if (!c.empty()) {
-            valid_clusters.push_back(c);
+        vector<double> new_means = means;
+        vector<double> new_variances(components, 0.0);
+        vector<double> new_weights(components);
+        for (int i = 0; i < components; ++i) {
+            if (effective_counts[i] > 1e-12) {
+                new_means[i] = weighted_sums[i] / effective_counts[i];
+                new_weights[i] = effective_counts[i] / data.size();
+            } else {
+                new_weights[i] = 1e-12;
+            }
         }
-    }
-    return valid_clusters.empty() ? vector<vector<double>>{data} : valid_clusters;
-}
 
-// Function to find thresholds using GMM
-vector<double> find_thresholds(const vector<double>& pos, const vector<double>& neg) {
-    vector<double> thresholds;
+        for (double value : data) {
+            double max_log_probability = -numeric_limits<double>::infinity();
+            for (int i = 0; i < components; ++i) {
+                double difference = value - means[i];
+                responsibilities[i] = log(max(weights[i], 1e-15)) -
+                    0.5 * log(2.0 * M_PI * variances[i]) -
+                    difference * difference / (2.0 * variances[i]);
+                max_log_probability = max(max_log_probability, responsibilities[i]);
+            }
+            double probability_sum = 0.0;
+            for (double& responsibility : responsibilities) {
+                responsibility = exp(responsibility - max_log_probability);
+                probability_sum += responsibility;
+            }
+            for (int i = 0; i < components; ++i) {
+                double responsibility = responsibilities[i] / probability_sum;
+                double difference = value - new_means[i];
+                new_variances[i] += responsibility * difference * difference;
+            }
+        }
+        for (int i = 0; i < components; ++i) {
+            if (effective_counts[i] > 1e-12) {
+                new_variances[i] = max(min_variance,
+                    new_variances[i] / effective_counts[i]);
+            } else {
+                new_variances[i] = variances[i];
+            }
+        }
 
-    // Check if data is sufficient
-    if (pos.empty() && !neg.empty()) {
-        thresholds.push_back(neg.front());
-        thresholds.push_back(neg.back());
-        //cout << "Error: Empty positive or negative data" << endl;
-        return thresholds;
-    }
-    else if(!pos.empty() && neg.empty())
-    {
-        thresholds.push_back(pos.front());
-        thresholds.push_back(pos.back());
-        //cout << "Error: Empty positive or negative data" << endl;
-        return thresholds;
-    }
-    else if(pos.empty() && neg.empty()){
-         cout << "Error: Empty positive or negative data" << endl;
-         return thresholds;
-    }
+        double weight_sum = accumulate(new_weights.begin(), new_weights.end(), 0.0);
+        for (double& weight : new_weights) {
+            weight /= weight_sum;
+        }
 
-    // Combine data to determine range
-    vector<double> combined = pos;
-    combined.insert(combined.end(), neg.begin(), neg.end());
-    double min_x = *min_element(combined.begin(), combined.end());
-    double max_x = *max_element(combined.begin(), combined.end());
-    double data_range = max_x - min_x;
-    double default_stddev = data_range / 10.0; // Reasonable stddev for small clusters
-
-    // Cluster data (up to 2 components)
-    int k = min(2, static_cast<int>(min(pos.size(), neg.size())));
-    vector<vector<double>> pos_clusters = clusterData(pos, k, default_stddev);
-    vector<vector<double>> neg_clusters = clusterData(neg, k, default_stddev);
-
-    // Compute GMM parameters
-    vector<double> pos_means, pos_stddevs, pos_weights;
-    vector<double> neg_means, neg_stddevs, neg_weights;
-    double total_pos = pos.size();
-    double total_neg = neg.size();
-
-    for (const auto& cluster : pos_clusters) {
-        double mean = calculateMean(cluster);
-        double stddev = calculateStdDev(cluster, mean, default_stddev);
-        double weight = static_cast<double>(cluster.size()) / total_pos;
-        pos_means.push_back(mean);
-        pos_stddevs.push_back(stddev);
-        pos_weights.push_back(weight);
-        cout << "Pos cluster: mean = " << mean << ", stddev = " << stddev << ", weight = " << weight << endl;
+        double max_change = 0.0;
+        for (int i = 0; i < components; ++i) {
+            max_change = max(max_change, abs(new_means[i] - means[i]));
+            means[i] = new_means[i];
+            variances[i] = new_variances[i];
+            weights[i] = new_weights[i];
+        }
+        if (max_change < 1e-8) break;
     }
 
-    for (const auto& cluster : neg_clusters) {
-        double mean = calculateMean(cluster);
-        double stddev = calculateStdDev(cluster, mean, default_stddev);
-        double weight = static_cast<double>(cluster.size()) / total_neg;
-        neg_means.push_back(mean);
-        neg_stddevs.push_back(stddev);
-        neg_weights.push_back(weight);
-        cout << "Neg cluster: mean = " << mean << ", stddev = " << stddev << ", weight = " << weight << endl;
+    vector<vector<double>> mixture;
+    for (int i = 0; i < components; ++i) {
+        mixture.push_back({means[i], sqrt(variances[i]), weights[i]});
     }
-
-    // Instead of intersections, just return empty thresholds
-    return thresholds;
+    return mixture;
 }
 vector<string> convertToVectorString(term_t list) {
     vector<string> vec;
@@ -343,46 +348,6 @@ PlTerm convertVectorStringToTerm(const vector<string>& vec) {
     return pl_list;
 }
 
-void binningData(vector<double> pos, vector<double> neg, vector<double> threshold, vector<double> &leq, vector<vector<double>> &inRange, vector<double> &geq) {
-
-    vector<double> temp;
-    vector<double> result;
-
-    temp.insert(temp.end(), pos.begin(), pos.end());
-    temp.insert(temp.end(), neg.begin(), neg.end());
-    temp.insert(temp.end(), threshold.begin(), threshold.end());
-    
-
-    sort(temp.begin(), temp.end());
-
-
-    vector<double> unique_temp;
-    int check =0;
-    for(auto& t:temp)
-    {
-            if(find(neg.begin(), neg.end(),t) == neg.end())
-            {
-                unique_temp.push_back(t);
-            }
-            else
-            {
-                if(leq.empty() && check ==0){
-                    if(unique_temp.empty())check=1;
-                    leq.insert(leq.begin(),unique_temp.begin(), unique_temp.end());
-                  
-                 }
-                else if (!leq.empty() || check==1)
-                    inRange.push_back(unique_temp);
-
-                    unique_temp.clear();
-            }
-            
-    }
-
-        if(!unique_temp.empty())geq.insert(geq.end(), unique_temp.begin(), unique_temp.end());
-
-}
-
 // Prolog predicate
 PREDICATE(findThresholds, 4) {
     term_t pos_term = A1.unwrap();
@@ -390,48 +355,17 @@ PREDICATE(findThresholds, 4) {
 
     vector<double> pos = convertToVector(pos_term);
     vector<double> neg = convertToVector(neg_term);
+    if (pos.empty() || neg.empty()) {
+        return false;
+    }
 
-    // Combine data to determine range
-    vector<double> combined = pos;
-    combined.insert(combined.end(), neg.begin(), neg.end());
-    double min_x = *min_element(combined.begin(), combined.end());
-    double max_x = *max_element(combined.begin(), combined.end());
-    double data_range = max_x - min_x;
-    double default_stddev = data_range / 10.0; // Reasonable stddev for small clusters
-
-    // Cluster data (up to 2 components)
+    // Fit up to two components per class, using the original values directly.
     int k = min(2, static_cast<int>(min(pos.size(), neg.size())));
-    vector<vector<double>> pos_clusters = clusterData(pos, k, default_stddev);
-    vector<vector<double>> neg_clusters = clusterData(neg, k, default_stddev);
+    vector<vector<double>> pos_mixture = fitGaussianMixture(pos, k);
+    vector<vector<double>> neg_mixture = fitGaussianMixture(neg, k);
 
-    
-
-    vector<vector<double>> negClusters;
-    for (const auto& cluster : neg_clusters) {
-        double mean = calculateMean(cluster);
-        double stddev = calculateStdDev(cluster, mean, default_stddev);
-        negClusters.push_back({mean, stddev});
-    }
-
-    vector<vector<double>> posClusters;
-    for (const auto& cluster : pos_clusters) {
-        double mean = calculateMean(cluster);
-        double stddev = calculateStdDev(cluster, mean, default_stddev);
-        // Check if this mean/stddev pair exists in negClusters
-        bool found = false;
-        for (const auto& nc : negClusters) {
-            if (std::abs(nc[0] - mean) < 1e-6 && std::abs(nc[1] - stddev) < 1e-6) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) posClusters.push_back({mean, stddev});
-    }
-    // Convert to Prolog list and unify
-    A3.unify_term(convertToTerm(posClusters));
-    A4.unify_term(convertToTerm(negClusters));
-
-    return true;
+    return A3.unify_term(convertToTerm(pos_mixture)) &&
+           A4.unify_term(convertToTerm(neg_mixture));
 }
 ////////////////////////////////////Relations//////////////////////
 
@@ -636,6 +570,92 @@ std::vector<std::string> selectBestRules(const std::vector<Rule>& rules, const s
 
     return bestRules;
 }
+// Compute rule quality: higher = better
+double computeRuleScore(const Rule& r, const unordered_set<string>& allPos) {
+    int posCovered = countPositivesCovered(r, allPos);
+    int negCovered = static_cast<int>(r.negatives.size());
+    if (posCovered == 0) return 0.0;
+
+    // Precision-like metric: penalize negatives
+    double precision = static_cast<double>(posCovered) / (posCovered + negCovered + 1e-6);
+    return precision;
+}
+
+// Select multiple high-precision rules that together cover more positives
+std::vector<std::string> selectBestRules2(const std::vector<Rule>& rules,
+                                         const std::unordered_set<std::string>& allPos,
+                                         double precisionThreshold = 0.7) {
+    // Clear globals for each run
+    gmmList.clear();
+    relationsList.clear();
+
+    struct ScoredRule {
+        double score;
+        const Rule* rule;
+    };
+
+    std::vector<ScoredRule> scored;
+    for (const auto& rule : rules) {
+        double score = computeRuleScore(rule, allPos);
+        if (score > 0.0) {
+            scored.push_back({score, &rule});
+        }
+    }
+
+    // Sort descending by score
+    std::sort(scored.begin(), scored.end(),
+              [](const ScoredRule& a, const ScoredRule& b) {
+                  return a.score > b.score;
+              });
+
+    std::unordered_set<std::string> coveredPos;
+    std::vector<std::string> bestRules;
+    double cumulativePrecision = 1.0; // start with perfect
+
+    for (const auto& sr : scored) {
+        const Rule& rule = *sr.rule;
+
+        // Calculate how many new positives this rule adds
+        int newCovers = 0;
+        for (const auto& p : rule.positives) {
+            if (allPos.count(p) && !coveredPos.count(p))
+                newCovers++;
+        }
+
+        if (newCovers == 0) continue; // skip redundant rules
+
+        // Temporary union to compute new precision
+        int totalPosCovered = static_cast<int>(coveredPos.size()) + newCovers;
+        int totalNegCovered = 0;
+        for (const auto& r2 : bestRules) {
+            // You can maintain negatives if needed; for simplicity, ignore overlap
+        }
+        totalNegCovered += static_cast<int>(rule.negatives.size());
+
+        double newPrecision =
+            static_cast<double>(totalPosCovered) /
+            (totalPosCovered + totalNegCovered + 1e-6);
+
+        // Only accept if it doesn’t drop below threshold
+        if (newPrecision >= precisionThreshold) {
+            bestRules.push_back(rule.name);
+            for (const auto& p : rule.positives)
+                if (allPos.count(p)) coveredPos.insert(p);
+
+            convertToVectorString(rule.gmm, gmmList);
+            convertToVectorString(rule.relations, relationsList);
+
+            cumulativePrecision = newPrecision;
+            
+        } 
+    }
+
+    std::cout << "Final precision: " << cumulativePrecision
+              << " | Total covered positives: " << coveredPos.size() << std::endl;
+
+    return bestRules;
+}
+
 unordered_set<string> convertToSetString(term_t list) {
     unordered_set<string> result;
     term_t head = PL_new_term_ref();
@@ -705,7 +725,7 @@ vector<Rule> convertToVectorRules(term_t list) {
     return rules;
 }
 
-PREDICATE(findBestRules, 2){
+PREDICATE(findBestRules, 3){
     // std::vector<Rule> rules = {
     //     {"r1", {"pos1"}, {"pos2"}},
     //     {"r2", {"pos3"}, {"neg1"}},
@@ -713,11 +733,16 @@ PREDICATE(findBestRules, 2){
     // };
     term_t prolog_rules = A1.unwrap();
     vector<Rule> rules = convertToVectorRules(prolog_rules);
+    // std::cout << rules.size() << " rules converted\n";
+    // for(auto &r : rules) std::cout << r.name << std::endl;
     term_t prolog_poses = A2.unwrap();
+
+    float threshold =  A3.as_float();
     //std::unordered_set<std::string> allPos = {"pos1", "pos2", "pos3"};
     std::unordered_set<std::string> allPos = convertToSetString(prolog_poses);
-
-    auto best = selectBestRules(rules, allPos);
+    auto best = vector<string>{};
+    if(threshold==0.0) best = selectBestRules(rules, allPos);
+    else best = selectBestRules2(rules, allPos, threshold); 
 
     std::cout << "\n\%--------------All Invented functions: "<<endl;
     for (const auto& r : gmmList) {
@@ -732,6 +757,22 @@ PREDICATE(findBestRules, 2){
     std::cout << "\n\%--------------Selected best rules: "<<endl;
     for (const auto& r : best) {
         std::cout << r <<"."<<endl;
+    }
+
+    std::ofstream ruleFile("rule.pl", std::ios::out | std::ios::trunc);
+    if (ruleFile.is_open()) {
+        for (const auto& r : best) {
+            ruleFile << r << "." << std::endl;
+        }
+        for (const auto& r : gmmList) {
+            ruleFile << r << "." << std::endl;
+        }
+        for (const auto& r : relationsList) {
+            ruleFile << r << "." << std::endl;
+        }
+        ruleFile.close();
+    } else {
+        std::cerr << "Error: Unable to write rule.pl" << std::endl;
     }
         // For each best rule, extract body predicates and match with gmm heads
         std::unordered_set<std::string> matchedGMMs;
@@ -777,7 +818,6 @@ PREDICATE(findBestRules, 2){
         }
     std::cout << std::endl;
 
-    std::cout << std::endl;
 
     return true;
 }
